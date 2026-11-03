@@ -1,9 +1,12 @@
 
+import csv
 from datetime import datetime, timezone
+import io
 from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
 
@@ -813,6 +816,177 @@ async def submit_public_response(
     }
 
 
+@router.get("/{form_id}/responses/summary")
+async def get_form_responses_summary(
+    form_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # 1. Ownership check
+    forms = await get_supabase_response(
+        "GET",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}&select=id,title,description,status,response_count&limit=1",
+        token,
+    )
+    if not forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+    form = forms[0]
+
+    # 2. Fetch questions
+    questions = await get_supabase_response(
+        "GET",
+        f"form_questions?form_id=eq.{form_id}&select=id,field_key,question_type,label,options,order_index,validation_rules&order=order_index.asc",
+        token,
+    )
+
+    # 3. Fetch responses
+    responses = await get_supabase_response(
+        "GET",
+        f"form_responses?form_id=eq.{form_id}&select=id,sap_id,submitted_at,completion_time_seconds&order=submitted_at.desc",
+        token,
+    )
+    total_responses = len(responses)
+
+    # 4. Fetch answers
+    answers = []
+    if responses:
+        resp_ids = ",".join(r["id"] for r in responses)
+        answers = await get_supabase_response(
+            "GET",
+            f"form_answers?response_id=in.({resp_ids})&select=response_id,question_id,answer_value",
+            token,
+        )
+
+    # Group answers by question_id
+    answers_by_qid: dict[str, list] = {}
+    for a in answers:
+        answers_by_qid.setdefault(str(a["question_id"]), []).append(a["answer_value"])
+
+    # Compute timeline and duration stats
+    timeline_counts: dict[str, int] = {}
+    total_time = 0
+    time_count = 0
+    for r in responses:
+        sub_date = (r.get("submitted_at") or "")[:10]
+        if sub_date:
+            timeline_counts[sub_date] = timeline_counts.get(sub_date, 0) + 1
+        dur = r.get("completion_time_seconds")
+        if dur and isinstance(dur, (int, float)) and dur > 0:
+            total_time += dur
+            time_count += 1
+
+    avg_completion_time = round(total_time / time_count, 1) if time_count > 0 else None
+
+    # Compute per-question analytics
+    question_summaries = []
+    for q in questions:
+        q_id = str(q["id"])
+        q_type = q.get("question_type")
+        raw_answers = answers_by_qid.get(q_id, [])
+        valid_answers = [v for v in raw_answers if v is not None and v != ""]
+        answered_count = len(valid_answers)
+
+        q_summary: dict = {
+            "question_id": q_id,
+            "label": q.get("label"),
+            "question_type": q_type,
+            "total_answers": answered_count,
+        }
+
+        if q_type in ("multiple_choice", "dropdown"):
+            option_counts: dict[str, int] = {}
+            for opt in q.get("options") or []:
+                key = opt.get("label") or opt.get("value")
+                if key:
+                    option_counts[key] = 0
+            for val in valid_answers:
+                key = str(val)
+                option_counts[key] = option_counts.get(key, 0) + 1
+            breakdown = [
+                {
+                    "label": opt_label,
+                    "count": count,
+                    "percentage": round((count / answered_count) * 100, 1) if answered_count > 0 else 0,
+                }
+                for opt_label, count in option_counts.items()
+            ]
+            q_summary["options_distribution"] = breakdown
+
+        elif q_type == "checkboxes":
+            option_counts = {}
+            for opt in q.get("options") or []:
+                key = opt.get("label") or opt.get("value")
+                if key:
+                    option_counts[key] = 0
+            for val in valid_answers:
+                if isinstance(val, list):
+                    for item in val:
+                        option_counts[str(item)] = option_counts.get(str(item), 0) + 1
+                else:
+                    option_counts[str(val)] = option_counts.get(str(val), 0) + 1
+            breakdown = [
+                {
+                    "label": opt_label,
+                    "count": count,
+                    "percentage": round((count / answered_count) * 100, 1) if answered_count > 0 else 0,
+                }
+                for opt_label, count in option_counts.items()
+            ]
+            q_summary["options_distribution"] = breakdown
+
+        elif q_type in ("linear_scale", "rating", "number"):
+            num_vals = []
+            distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+            for val in valid_answers:
+                try:
+                    num = float(val)
+                    num_vals.append(num)
+                    int_score = int(round(num))
+                    if 1 <= int_score <= 5:
+                        distribution[int_score] = distribution.get(int_score, 0) + 1
+                except Exception:
+                    pass
+            avg_score = round(sum(num_vals) / len(num_vals), 2) if num_vals else None
+            q_summary["rating_stats"] = {
+                "average": avg_score,
+                "min": min(num_vals) if num_vals else None,
+                "max": max(num_vals) if num_vals else None,
+                "distribution": [
+                    {"score": score, "count": count, "percentage": round((count / len(num_vals)) * 100, 1) if num_vals else 0}
+                    for score, count in sorted(distribution.items())
+                ],
+            }
+
+        elif q_type in ("short_text", "long_text", "date", "time"):
+            q_summary["text_responses"] = [
+                {"response": str(v)} for v in valid_answers[-50:]
+            ]
+
+        elif q_type == "file_upload":
+            files_list = []
+            for v in valid_answers:
+                if isinstance(v, dict) and "url" in v:
+                    files_list.append(v)
+                elif isinstance(v, str) and v.startswith("http"):
+                    files_list.append({"url": v, "file_name": v.split("/")[-1]})
+            q_summary["files"] = files_list
+
+        question_summaries.append(q_summary)
+
+    return {
+        "success": True,
+        "form": form,
+        "total_responses": total_responses,
+        "average_completion_time_seconds": avg_completion_time,
+        "timeline": [
+            {"date": d, "count": c} for d, c in sorted(timeline_counts.items())
+        ],
+        "question_summaries": question_summaries,
+    }
+
+
 @router.get("/{form_id}/responses")
 async def get_form_responses(
     form_id: str,
@@ -826,7 +1000,7 @@ async def get_form_responses(
         (
             f"forms?id=eq.{form_id}"
             f"&creator_id=eq.{current_user['id']}"
-            "&select=id,title,description,status,response_count"
+            "&select=id,title,description,status,response_count,shareable_slug"
             "&limit=1"
         ),
         token,
@@ -849,17 +1023,15 @@ async def get_form_responses(
         "GET",
         (
             f"form_questions?form_id=eq.{form_id}"
-            "&select=id,label,question_type,order_index"
+            "&select=id,label,question_type,order_index,options,validation_rules"
             "&order=order_index.asc"
         ),
         token,
     )
 
     answers = []
-
     if responses:
         response_ids = ",".join(response["id"] for response in responses)
-
         answers = await get_supabase_response(
             "GET",
             (
@@ -870,8 +1042,7 @@ async def get_form_responses(
             token,
         )
 
-    answers_by_response = {}
-
+    answers_by_response: dict[str, list] = {}
     for answer in answers:
         response_id = answer["response_id"]
         answers_by_response.setdefault(response_id, []).append(answer)
@@ -885,3 +1056,256 @@ async def get_form_responses(
         "questions": questions,
         "responses": responses,
     }
+
+
+@router.get("/{form_id}/responses/{response_id}")
+async def get_single_response(
+    form_id: str,
+    response_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # Ownership check
+    forms = await get_supabase_response(
+        "GET",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}&select=id,title&limit=1",
+        token,
+    )
+    if not forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+
+    responses = await get_supabase_response(
+        "GET",
+        f"form_responses?id=eq.{response_id}&form_id=eq.{form_id}&select=*&limit=1",
+        token,
+    )
+    if not responses:
+        raise HTTPException(status_code=404, detail="Response not found.")
+
+    answers = await get_supabase_response(
+        "GET",
+        f"form_answers?response_id=eq.{response_id}&select=question_id,answer_value",
+        token,
+    )
+
+    questions = await get_supabase_response(
+        "GET",
+        f"form_questions?form_id=eq.{form_id}&select=*&order=order_index.asc",
+        token,
+    )
+
+    return {
+        "success": True,
+        "form": forms[0],
+        "response": responses[0],
+        "answers": answers,
+        "questions": questions,
+    }
+
+
+@router.delete("/{form_id}/responses/{response_id}")
+async def delete_single_response(
+    form_id: str,
+    response_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # 1. Verify ownership
+    forms = await get_supabase_response(
+        "GET",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}&select=id,response_count&limit=1",
+        token,
+    )
+    if not forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+
+    # 2. Delete response
+    service_key = settings.SUPABASE_SERVICE_ROLE_KEY
+    await get_supabase_response(
+        "DELETE",
+        f"form_responses?id=eq.{response_id}&form_id=eq.{form_id}",
+        service_key,
+    )
+
+    # 3. Decrement response count
+    curr_count = forms[0].get("response_count") or 0
+    new_count = max(0, curr_count - 1)
+    await get_supabase_response(
+        "PATCH",
+        f"forms?id=eq.{form_id}",
+        service_key,
+        {"response_count": new_count},
+    )
+
+    return {"success": True, "message": "Response deleted successfully."}
+
+
+@router.delete("/{form_id}/responses")
+async def delete_all_responses(
+    form_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # 1. Verify ownership
+    forms = await get_supabase_response(
+        "GET",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}&select=id&limit=1",
+        token,
+    )
+    if not forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+
+    # 2. Delete all responses
+    service_key = settings.SUPABASE_SERVICE_ROLE_KEY
+    await get_supabase_response(
+        "DELETE",
+        f"form_responses?form_id=eq.{form_id}",
+        service_key,
+    )
+
+    # 3. Reset response_count to 0
+    await get_supabase_response(
+        "PATCH",
+        f"forms?id=eq.{form_id}",
+        service_key,
+        {"response_count": 0},
+    )
+
+    return {"success": True, "message": "All responses have been reset."}
+
+
+@router.patch("/{form_id}/toggle-status")
+async def toggle_form_accepting(
+    form_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    forms = await get_supabase_response(
+        "GET",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}&select=id,status&limit=1",
+        token,
+    )
+    if not forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+
+    curr_status = forms[0].get("status", "draft")
+    new_status = "closed" if curr_status == "published" else "published"
+
+    await get_supabase_response(
+        "PATCH",
+        f"forms?id=eq.{form_id}",
+        token,
+        {"status": new_status},
+    )
+
+    return {
+        "success": True,
+        "status": new_status,
+        "message": f"Form is now {'accepting responses' if new_status == 'published' else 'closed'}.",
+    }
+
+
+@router.get("/{form_id}/export/csv")
+async def export_form_csv(
+    form_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # Ownership check
+    forms = await get_supabase_response(
+        "GET",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}&select=id,title,shareable_slug&limit=1",
+        token,
+    )
+    if not forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+    form = forms[0]
+
+    questions = await get_supabase_response(
+        "GET",
+        f"form_questions?form_id=eq.{form_id}&select=id,label,order_index&order=order_index.asc",
+        token,
+    )
+
+    responses = await get_supabase_response(
+        "GET",
+        f"form_responses?form_id=eq.{form_id}&select=id,sap_id,submitted_at,completion_time_seconds&order=submitted_at.desc",
+        token,
+    )
+
+    answers = []
+    if responses:
+        resp_ids = ",".join(r["id"] for r in responses)
+        answers = await get_supabase_response(
+            "GET",
+            f"form_answers?response_id=in.({resp_ids})&select=response_id,question_id,answer_value",
+            token,
+        )
+
+    # Index answers by (response_id, question_id)
+    answers_map: dict[tuple[str, str], str] = {}
+    for a in answers:
+        val = a["answer_value"]
+        if isinstance(val, list):
+            str_val = "; ".join(str(item) for item in val)
+        elif isinstance(val, dict):
+            str_val = val.get("url") or str(val)
+        else:
+            str_val = str(val) if val is not None else ""
+        answers_map[(str(a["response_id"]), str(a["question_id"]))] = str_val
+
+    output = io.StringIO()
+    # Write UTF-8 BOM so Excel opens UTF-8 encoded characters properly
+    output.write("\ufeff")
+    writer = csv.writer(output)
+
+    # Headers
+    header_row = ["Response ID", "Respondent Identifier", "Submitted At", "Duration (s)"]
+    for q in questions:
+        header_row.append(q.get("label") or "Question")
+    writer.writerow(header_row)
+
+    # Data Rows
+    for r in responses:
+        row = [
+            r["id"],
+            r.get("sap_id", ""),
+            r.get("submitted_at", ""),
+            r.get("completion_time_seconds", ""),
+        ]
+        for q in questions:
+            row.append(answers_map.get((str(r["id"]), str(q["id"])), ""))
+        writer.writerow(row)
+
+    output.seek(0)
+    slug = form.get("shareable_slug") or form_id
+    filename = f"{slug}_responses.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{form_id}/export/xlsx")
+async def export_form_xlsx(
+    form_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    # Delegate to CSV stream with Excel content-type
+    res = await export_form_csv(form_id, current_user, credentials)
+    slug = form_id
+    res.headers["Content-Disposition"] = f'attachment; filename="{slug}_responses.csv"'
+    return res
