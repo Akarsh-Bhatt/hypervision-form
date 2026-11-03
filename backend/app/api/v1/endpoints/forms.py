@@ -44,7 +44,7 @@ async def get_supabase_response(
     method: str,
     endpoint: str,
     token: str,
-    data: dict | None = None,
+    data: dict | list | None = None,
 ):
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.request(
@@ -110,6 +110,114 @@ async def create_form(
         "success": True,
         "message": "Form created successfully.",
         "form": created_form[0] if created_form else None,
+    }
+
+
+# Duplicate Form API
+@router.post("/{form_id}/duplicate", status_code=status.HTTP_201_CREATED)
+async def duplicate_form(
+    form_id: UUID,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # Fetch the original form and verify ownership.
+    original_forms = await get_supabase_response(
+        "GET",
+        (
+            f"forms?id=eq.{form_id}"
+            f"&creator_id=eq.{current_user['id']}"
+            "&select=*"
+            "&limit=1"
+        ),
+        token,
+    )
+
+    if not original_forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+
+    original = original_forms[0]
+
+    # Fetch all questions belonging to the original form.
+    original_questions = await get_supabase_response(
+        "GET",
+        (
+            f"form_questions?form_id=eq.{form_id}"
+            "&select=field_key,question_type,label,description,"
+            "order_index,is_required,validation_rules,options"
+            "&order=order_index.asc"
+        ),
+        token,
+    )
+
+    # Create a new form with a fresh ID and shareable slug.
+    new_form_data = {
+        "creator_id": current_user["id"],
+        "shareable_slug": uuid4().hex,
+        "title": f"{original['title']} (Copy)",
+        "description": original.get("description") or "",
+        "status": "draft",
+        "settings": original.get("settings") or {},
+        "theme": original.get("theme") or {},
+        "response_count": 0,
+    }
+
+    new_forms = await get_supabase_response(
+        "POST",
+        "forms",
+        token,
+        new_form_data,
+    )
+
+    if not new_forms:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to create the duplicate form.",
+        )
+
+    new_form = new_forms[0]
+
+    # Copy questions using new IDs and the new form ID.
+    if original_questions:
+        copied_questions = [
+            {
+                **question,
+                "form_id": new_form["id"],
+            }
+            for question in original_questions
+        ]
+
+        try:
+            await get_supabase_response(
+                "POST",
+                "form_questions",
+                token,
+                copied_questions,
+            )
+        except HTTPException:
+            # Remove the new form if copying its questions fails.
+            try:
+                await get_supabase_response(
+                    "DELETE",
+                    (
+                        f"forms?id=eq.{new_form['id']}"
+                        f"&creator_id=eq.{current_user['id']}"
+                    ),
+                    token,
+                )
+            except HTTPException:
+                pass
+
+            raise HTTPException(
+                status_code=500,
+                detail="Unable to copy the form questions. Please try again.",
+            )
+
+    return {
+        "success": True,
+        "message": "Form duplicated successfully.",
+        "form": new_form,
     }
 
 
@@ -191,10 +299,7 @@ async def delete_form(
 @router.get("/public/{slug}")
 async def get_public_form(slug: str):
     if not slug or len(slug) > 100 or not slug.isalnum():
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid registration link.",
-        )
+        raise HTTPException(status_code=400, detail="Invalid registration link.")
 
     token = settings.SUPABASE_ANON_KEY
 
@@ -233,6 +338,7 @@ async def get_public_form(slug: str):
         "form": form,
         "questions": questions,
     }
+
 
 @router.post("/public/{slug}/submit")
 async def submit_public_response(
@@ -309,7 +415,8 @@ async def submit_public_response(
         "message": "Your registration has been submitted successfully.",
         "response_id": response.json(),
     }
-    
+
+
 @router.get("/{form_id}/responses")
 async def get_form_responses(
     form_id: str,
@@ -318,7 +425,6 @@ async def get_form_responses(
 ):
     token = credentials.credentials
 
-    # Verify that this event belongs to the logged-in creator.
     forms = await get_supabase_response(
         "GET",
         (
@@ -333,7 +439,6 @@ async def get_form_responses(
     if not forms:
         raise HTTPException(status_code=404, detail="Event not found.")
 
-    # Fetch registrations for this event.
     responses = await get_supabase_response(
         "GET",
         (
@@ -344,7 +449,6 @@ async def get_form_responses(
         token,
     )
 
-    # Fetch the questions for this event.
     questions = await get_supabase_response(
         "GET",
         (
@@ -357,11 +461,8 @@ async def get_form_responses(
 
     answers = []
 
-    # Fetch answers only when registrations exist.
     if responses:
-        response_ids = ",".join(
-            response["id"] for response in responses
-        )
+        response_ids = ",".join(response["id"] for response in responses)
 
         answers = await get_supabase_response(
             "GET",
@@ -373,7 +474,6 @@ async def get_form_responses(
             token,
         )
 
-    # Attach each registration's answers to that registration.
     answers_by_response = {}
 
     for answer in answers:
@@ -381,9 +481,7 @@ async def get_form_responses(
         answers_by_response.setdefault(response_id, []).append(answer)
 
     for response in responses:
-        response["answers"] = answers_by_response.get(
-            response["id"], []
-        )
+        response["answers"] = answers_by_response.get(response["id"], [])
 
     return {
         "success": True,
@@ -391,4 +489,3 @@ async def get_form_responses(
         "questions": questions,
         "responses": responses,
     }
-
