@@ -10,6 +10,7 @@ import {
   Users,
   Search,
   Trash2,
+  Copy,
   Pencil,
   FileText,
   Loader2,
@@ -498,6 +499,18 @@ async function duplicateEvent(event: EventItem) {
                       ? "Deleting..."
                       : "Delete Event"}
                   </button>
+                  <button
+  onClick={() => duplicateEvent(event)}
+  disabled={duplicatingId === event.id}
+  className="flex items-center justify-center gap-2 rounded-lg border border-indigo-200 p-2 text-sm text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+>
+  {duplicatingId === event.id ? (
+    <Loader2 size={15} className="animate-spin" />
+  ) : (
+    <Copy size={15} />
+  )}
+  {duplicatingId === event.id ? "Duplicating..." : "Duplicate Event"}
+</button>
                 </div>
               </article>
             ))}
