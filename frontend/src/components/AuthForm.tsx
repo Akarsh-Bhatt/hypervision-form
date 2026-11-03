@@ -92,11 +92,12 @@ export default function AuthForm({ mode }: { mode: Mode }) {
         router.push("/login");
       }
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Something went wrong. Please try again."
-      );
+      console.error("Authentication error:", err);
+      let msg = err instanceof Error ? err.message : "Something went wrong. Please try again.";
+      if (msg === "Failed to fetch") {
+        msg = "Unable to reach Supabase. If you just updated .env.local, restart your Next.js terminal (Ctrl+C then npm run dev). Also check if an adblocker or Brave Shields is blocking supabase.co.";
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
