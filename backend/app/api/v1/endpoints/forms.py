@@ -1,10 +1,10 @@
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.config import settings
 from app.core.security import get_current_user, security_scheme
@@ -20,6 +20,24 @@ class FormCreate(BaseModel):
 class FormUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+
+
+class PublicAnswer(BaseModel):
+    question_id: UUID
+    answer_value: str | list | dict | int | float | bool | None
+
+
+class PublicSubmission(BaseModel):
+    sap_id: str = Field(min_length=1, max_length=100)
+    answers: list[PublicAnswer] = Field(max_length=100)
+
+    @field_validator("sap_id")
+    @classmethod
+    def validate_sap_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("SAP ID cannot be empty.")
+        return value
 
 
 async def get_supabase_response(
@@ -73,10 +91,13 @@ async def create_form(
     form_data = {
         "creator_id": current_user["id"],
         "shareable_slug": uuid4().hex,
-        "title": form.title,
+        "title": form.title.strip(),
         "description": form.description,
         "status": "draft",
     }
+
+    if not form_data["title"]:
+        raise HTTPException(status_code=400, detail="Event name cannot be empty.")
 
     created_form = await get_supabase_response(
         "POST",
@@ -164,4 +185,81 @@ async def delete_form(
     return {
         "success": True,
         "message": "Event deleted successfully.",
+    }
+
+
+@router.post("/public/{slug}/submit")
+async def submit_public_response(
+    slug: str,
+    submission: PublicSubmission,
+):
+    if not slug or len(slug) > 100:
+        raise HTTPException(status_code=400, detail="Invalid registration link.")
+
+    payload = {
+        "p_slug": slug,
+        "p_sap_id": submission.sap_id,
+        "p_answers": [
+            {
+                "question_id": str(answer.question_id),
+                "answer_value": answer.answer_value,
+            }
+            for answer in submission.answers
+        ],
+    }
+
+    service_key = settings.SUPABASE_SERVICE_ROLE_KEY
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/rpc/submit_public_response",
+                headers={
+                    "apikey": service_key,
+                    "Authorization": f"Bearer {service_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=503,
+            detail="Registration service is temporarily unavailable.",
+        )
+
+    if response.status_code >= 400:
+        try:
+            error_data = response.json()
+            error_message = str(error_data.get("message", "")).lower()
+        except ValueError:
+            error_message = ""
+
+        if "duplicate" in error_message or "already registered" in error_message:
+            raise HTTPException(
+                status_code=409,
+                detail="You have already registered for this event.",
+            )
+
+        if "not found" in error_message or "not published" in error_message:
+            raise HTTPException(
+                status_code=404,
+                detail="This registration form is unavailable.",
+            )
+
+        if "required" in error_message:
+            raise HTTPException(
+                status_code=422,
+                detail="Please complete all required questions.",
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail="Your registration could not be submitted. Please check your answers.",
+        )
+
+    return {
+        "success": True,
+        "message": "Your registration has been submitted successfully.",
+        "response_id": response.json(),
     }
