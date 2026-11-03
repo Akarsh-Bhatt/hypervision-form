@@ -4,8 +4,8 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
-  Plus, CalendarDays, FileText, Users, Search,
-  Trash2, Pencil, ClipboardList, Loader2
+  Plus, CalendarDays, ClipboardList, Users, Search,
+  Trash2, Pencil, FileText, Loader2, X
 } from "lucide-react";
 
 type EventItem = {
@@ -23,11 +23,14 @@ export default function DashboardPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<EventItem | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   async function getToken() {
     const supabase = createClient();
@@ -45,9 +48,7 @@ export default function DashboardPage() {
       setLoading(true);
       setError("");
 
-      if (!API_URL) {
-        throw new Error("Backend URL is not configured.");
-      }
+      if (!API_URL) throw new Error("Backend URL is not configured.");
 
       const token = await getToken();
       const response = await fetch(`${API_URL}/api/v1/forms/`, {
@@ -72,12 +73,30 @@ export default function DashboardPage() {
     loadEvents();
   }, []);
 
+  function openCreateModal() {
+    setTitle("");
+    setDescription("");
+    setError("");
+    setNotice("");
+    setShowCreate(true);
+  }
+
+  function openEditModal(event: EventItem) {
+    setTitle(event.title);
+    setDescription(event.description || "");
+    setError("");
+    setNotice("");
+    setEditingEvent(event);
+  }
+
   async function createEvent() {
     if (!title.trim()) return;
 
     try {
       setSaving(true);
       setError("");
+
+      if (!API_URL) throw new Error("Backend URL is not configured.");
 
       const token = await getToken();
       const response = await fetch(`${API_URL}/api/v1/forms/`, {
@@ -98,14 +117,92 @@ export default function DashboardPage() {
         throw new Error(result.detail || "Unable to create event.");
       }
 
-      setTitle("");
-      setDescription("");
       setShowCreate(false);
+      setNotice("Event created successfully.");
       await loadEvents();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create event.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function updateEvent() {
+    if (!editingEvent || !title.trim()) return;
+
+    try {
+      setSaving(true);
+      setError("");
+
+      if (!API_URL) throw new Error("Backend URL is not configured.");
+
+      const token = await getToken();
+      const response = await fetch(
+        `${API_URL}/api/v1/forms/${editingEvent.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            title: title.trim(),
+            description: description.trim(),
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to update event.");
+      }
+
+      setEditingEvent(null);
+      setNotice("Event updated successfully.");
+      await loadEvents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update event.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteEvent(event: EventItem) {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${event.title}"? This action cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setDeletingId(event.id);
+      setError("");
+      setNotice("");
+
+      if (!API_URL) throw new Error("Backend URL is not configured.");
+
+      const token = await getToken();
+      const response = await fetch(
+        `${API_URL}/api/v1/forms/${event.id}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to delete event.");
+      }
+
+      setNotice("Event deleted successfully.");
+      await loadEvents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete event.");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -142,7 +239,7 @@ export default function DashboardPage() {
           </div>
 
           <button
-            onClick={() => setShowCreate(true)}
+            onClick={openCreateModal}
             className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700"
           >
             <Plus size={18} /> Create New Event
@@ -150,15 +247,24 @@ export default function DashboardPage() {
         </div>
 
         {error && (
-          <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="mb-4 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700">
+            {notice}
           </div>
         )}
 
         <div className="mb-9 grid gap-4 sm:grid-cols-3">
           <Summary icon={<CalendarDays />} label="Total Events" value={events.length} />
-          <Summary icon={<ClipboardList />} label="Published Events"
-            value={events.filter(e => e.status === "published").length} />
+          <Summary
+            icon={<ClipboardList />}
+            label="Published Events"
+            value={events.filter(e => e.status === "published").length}
+          />
           <Summary icon={<Users />} label="Total Responses" value={totalResponses} />
         </div>
 
@@ -194,7 +300,7 @@ export default function DashboardPage() {
             </p>
             {!search && (
               <button
-                onClick={() => setShowCreate(true)}
+                onClick={openCreateModal}
                 className="mt-5 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white"
               >
                 <Plus className="mr-2 inline" size={17} />
@@ -224,17 +330,38 @@ export default function DashboardPage() {
                 </p>
 
                 <div className="mt-5 grid grid-cols-2 gap-2 border-t pt-4">
-                  <button disabled className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-400">
+                  <button
+                    onClick={() => openEditModal(event)}
+                    className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
                     <Pencil size={15} /> Edit Event
                   </button>
-                  <button disabled className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-400">
+
+                  <button
+                    disabled
+                    className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-400"
+                  >
                     <FileText size={15} /> Manage Form
                   </button>
-                  <button disabled className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-400">
+
+                  <button
+                    disabled
+                    className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-400"
+                  >
                     <Users size={15} /> View Responses
                   </button>
-                  <button disabled className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-400">
-                    <Trash2 size={15} /> Delete Event
+
+                  <button
+                    onClick={() => deleteEvent(event)}
+                    disabled={deletingId === event.id}
+                    className="flex items-center justify-center gap-2 rounded-lg border border-red-200 p-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    {deletingId === event.id ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : (
+                      <Trash2 size={15} />
+                    )}
+                    {deletingId === event.id ? "Deleting..." : "Delete Event"}
                   </button>
                 </div>
               </article>
@@ -243,10 +370,25 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {showCreate && (
+      {(showCreate || editingEvent) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="mb-5 text-xl font-bold">Create New Event</h2>
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-xl font-bold">
+                {editingEvent ? "Edit Event" : "Create New Event"}
+              </h2>
+              <button
+                onClick={() => {
+                  setShowCreate(false);
+                  setEditingEvent(null);
+                  setError("");
+                }}
+                className="rounded-lg p-1 text-slate-500 hover:bg-slate-100"
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
 
             <label className="mb-2 block text-sm font-medium">Event Name</label>
             <input
@@ -266,16 +408,27 @@ export default function DashboardPage() {
             />
 
             <div className="mt-6 flex justify-end gap-3">
-              <button onClick={() => setShowCreate(false)}
-                className="rounded-xl border px-4 py-2.5 text-sm">
+              <button
+                onClick={() => {
+                  setShowCreate(false);
+                  setEditingEvent(null);
+                  setError("");
+                }}
+                className="rounded-xl border px-4 py-2.5 text-sm"
+              >
                 Cancel
               </button>
+
               <button
-                onClick={createEvent}
+                onClick={editingEvent ? updateEvent : createEvent}
                 disabled={!title.trim() || saving}
                 className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
               >
-                {saving ? "Saving..." : "Create Event"}
+                {saving
+                  ? "Saving..."
+                  : editingEvent
+                    ? "Save Changes"
+                    : "Create Event"}
               </button>
             </div>
           </div>
