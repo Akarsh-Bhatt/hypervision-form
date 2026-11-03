@@ -40,6 +40,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -228,7 +229,44 @@ export default function DashboardPage() {
       setDeletingId(null);
     }
   }
+async function duplicateEvent(event: EventItem) {
+  try {
+    setDuplicatingId(event.id);
+    setError("");
+    setNotice("");
 
+    if (!API_URL) {
+      throw new Error("Backend URL is not configured.");
+    }
+
+    const token = await getToken();
+
+    const response = await fetch(
+      `${API_URL}/api/v1/forms/${event.id}/duplicate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.detail || "Unable to duplicate event.");
+    }
+
+    setNotice("Event duplicated successfully.");
+    await loadEvents();
+  } catch (err) {
+    setError(
+      err instanceof Error ? err.message : "Unable to duplicate event."
+    );
+  } finally {
+    setDuplicatingId(null);
+  }
+}
   const filteredEvents = events.filter((event) => {
     const matchesSearch = event.title
       .toLowerCase()
