@@ -1,12 +1,20 @@
 
 "use client";
-import { useRouter } from "next/navigation";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
-  Plus, CalendarDays, ClipboardList, Users, Search,
-  Trash2, Pencil, FileText, Loader2, X
+  Plus,
+  CalendarDays,
+  ClipboardList,
+  Users,
+  Search,
+  Trash2,
+  Pencil,
+  FileText,
+  Loader2,
+  X,
 } from "lucide-react";
 
 type EventItem = {
@@ -22,6 +30,7 @@ const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
 
 export default function DashboardPage() {
   const router = useRouter();
+
   const [events, setEvents] = useState<EventItem[]>([]);
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -50,9 +59,12 @@ export default function DashboardPage() {
       setLoading(true);
       setError("");
 
-      if (!API_URL) throw new Error("Backend URL is not configured.");
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
 
       const token = await getToken();
+
       const response = await fetch(`${API_URL}/api/v1/forms/`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -98,9 +110,12 @@ export default function DashboardPage() {
       setSaving(true);
       setError("");
 
-      if (!API_URL) throw new Error("Backend URL is not configured.");
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
 
       const token = await getToken();
+
       const response = await fetch(`${API_URL}/api/v1/forms/`, {
         method: "POST",
         headers: {
@@ -136,9 +151,12 @@ export default function DashboardPage() {
       setSaving(true);
       setError("");
 
-      if (!API_URL) throw new Error("Backend URL is not configured.");
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
 
       const token = await getToken();
+
       const response = await fetch(
         `${API_URL}/api/v1/forms/${editingEvent.id}`,
         {
@@ -182,9 +200,12 @@ export default function DashboardPage() {
       setError("");
       setNotice("");
 
-      if (!API_URL) throw new Error("Backend URL is not configured.");
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
 
       const token = await getToken();
+
       const response = await fetch(
         `${API_URL}/api/v1/forms/${event.id}`,
         {
@@ -208,12 +229,13 @@ export default function DashboardPage() {
     }
   }
 
-  const filteredEvents = events.filter(event =>
+  const filteredEvents = events.filter((event) =>
     event.title.toLowerCase().includes(search.toLowerCase())
   );
 
   const totalResponses = events.reduce(
-    (sum, event) => sum + (event.response_count || 0), 0
+    (sum, event) => sum + (event.response_count || 0),
+    0
   );
 
   return (
@@ -221,8 +243,11 @@ export default function DashboardPage() {
       <header className="flex items-center justify-between border-b bg-white px-6 py-5">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Hypervision</h1>
-          <p className="text-sm text-slate-500">Event Management Workspace</p>
+          <p className="text-sm text-slate-500">
+            Event Management Workspace
+          </p>
         </div>
+
         <span className="rounded-full bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-700">
           Creator Dashboard
         </span>
@@ -231,10 +256,14 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-7xl p-6 sm:p-8">
         <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
-            <p className="text-sm font-semibold text-indigo-600">YOUR WORKSPACE</p>
+            <p className="text-sm font-semibold text-indigo-600">
+              YOUR WORKSPACE
+            </p>
+
             <h2 className="mt-2 text-3xl font-bold text-slate-900">
               Manage your events.
             </h2>
+
             <p className="mt-2 text-sm text-slate-500">
               Create events and manage their registration forms.
             </p>
@@ -261,13 +290,23 @@ export default function DashboardPage() {
         )}
 
         <div className="mb-9 grid gap-4 sm:grid-cols-3">
-          <Summary icon={<CalendarDays />} label="Total Events" value={events.length} />
+          <Summary
+            icon={<CalendarDays />}
+            label="Total Events"
+            value={events.length}
+          />
+
           <Summary
             icon={<ClipboardList />}
             label="Published Events"
-            value={events.filter(e => e.status === "published").length}
+            value={events.filter((e) => e.status === "published").length}
           />
-          <Summary icon={<Users />} label="Total Responses" value={totalResponses} />
+
+          <Summary
+            icon={<Users />}
+            label="Total Responses"
+            value={totalResponses}
+          />
         </div>
 
         <div className="mb-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
@@ -277,10 +316,14 @@ export default function DashboardPage() {
           </div>
 
           <div className="relative sm:w-64">
-            <Search className="absolute left-3 top-3 text-slate-400" size={17} />
+            <Search
+              className="absolute left-3 top-3 text-slate-400"
+              size={17}
+            />
+
             <input
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               placeholder="Search events..."
               className="w-full rounded-xl border bg-white py-2.5 pl-10 pr-4 text-sm outline-none focus:border-indigo-400"
             />
@@ -293,13 +336,19 @@ export default function DashboardPage() {
           </div>
         ) : filteredEvents.length === 0 ? (
           <div className="rounded-2xl border border-dashed bg-white px-5 py-16 text-center">
-            <CalendarDays className="mx-auto mb-4 text-indigo-500" size={36} />
+            <CalendarDays
+              className="mx-auto mb-4 text-indigo-500"
+              size={36}
+            />
+
             <h3 className="text-lg font-semibold text-slate-900">
               {search ? "No matching events" : "No events yet"}
             </h3>
+
             <p className="mt-2 text-sm text-slate-500">
               Create your first event to get started.
             </p>
+
             {!search && (
               <button
                 onClick={openCreateModal}
@@ -312,16 +361,23 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className="grid gap-5 lg:grid-cols-2">
-            {filteredEvents.map(event => (
-              <article key={event.id} className="rounded-2xl border bg-white p-5 shadow-sm">
+            {filteredEvents.map((event) => (
+              <article
+                key={event.id}
+                className="rounded-2xl border bg-white p-5 shadow-sm"
+              >
                 <div className="mb-4 flex items-center justify-between">
                   <CalendarDays className="text-indigo-600" size={23} />
+
                   <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold capitalize text-amber-700">
                     {event.status}
                   </span>
                 </div>
 
-                <h3 className="text-lg font-bold text-slate-900">{event.title}</h3>
+                <h3 className="text-lg font-bold text-slate-900">
+                  {event.title}
+                </h3>
+
                 <p className="mt-1 text-sm text-slate-500">
                   {event.description || "No description added."}
                 </p>
@@ -339,19 +395,19 @@ export default function DashboardPage() {
                     <Pencil size={15} /> Edit Event
                   </button>
 
-                 <button
-  onClick={() => router.push(`/editor/${event.id}`)}
-  className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-indigo-600 hover:bg-indigo-50"
->
-  <FileText size={15} /> Manage Form
-</button>
+                  <button
+                    onClick={() => router.push(`/editor/${event.id}`)}
+                    className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-indigo-600 hover:bg-indigo-50"
+                  >
+                    <FileText size={15} /> Manage Form
+                  </button>
 
                   <button
-  onClick={() => router.push(`/editor/${event.id}`)}
-  className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-indigo-600 hover:bg-indigo-50"
->
-  <FileText size={15} /> Manage Form
-</button>
+                    onClick={() => router.push(`/responses/${event.id}`)}
+                    className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-green-600 hover:bg-green-50"
+                  >
+                    <Users size={15} /> View Responses
+                  </button>
 
                   <button
                     onClick={() => deleteEvent(event)}
@@ -363,7 +419,10 @@ export default function DashboardPage() {
                     ) : (
                       <Trash2 size={15} />
                     )}
-                    {deletingId === event.id ? "Deleting..." : "Delete Event"}
+
+                    {deletingId === event.id
+                      ? "Deleting..."
+                      : "Delete Event"}
                   </button>
                 </div>
               </article>
@@ -379,6 +438,7 @@ export default function DashboardPage() {
               <h2 className="text-xl font-bold">
                 {editingEvent ? "Edit Event" : "Create New Event"}
               </h2>
+
               <button
                 onClick={() => {
                   setShowCreate(false);
@@ -392,18 +452,24 @@ export default function DashboardPage() {
               </button>
             </div>
 
-            <label className="mb-2 block text-sm font-medium">Event Name</label>
+            <label className="mb-2 block text-sm font-medium">
+              Event Name
+            </label>
+
             <input
               value={title}
-              onChange={e => setTitle(e.target.value)}
+              onChange={(e) => setTitle(e.target.value)}
               placeholder="Enter event name"
               className="mb-4 w-full rounded-xl border p-3 text-sm"
             />
 
-            <label className="mb-2 block text-sm font-medium">Description</label>
+            <label className="mb-2 block text-sm font-medium">
+              Description
+            </label>
+
             <textarea
               value={description}
-              onChange={e => setDescription(e.target.value)}
+              onChange={(e) => setDescription(e.target.value)}
               placeholder="Describe your event"
               rows={3}
               className="w-full rounded-xl border p-3 text-sm"
@@ -440,7 +506,11 @@ export default function DashboardPage() {
   );
 }
 
-function Summary({ icon, label, value }: {
+function Summary({
+  icon,
+  label,
+  value,
+}: {
   icon: React.ReactNode;
   label: string;
   value: number;
@@ -451,6 +521,7 @@ function Summary({ icon, label, value }: {
         <span className="text-sm font-medium">{label}</span>
         {icon}
       </div>
+
       <p className="mt-4 text-3xl font-bold text-slate-900">{value}</p>
     </div>
   );
