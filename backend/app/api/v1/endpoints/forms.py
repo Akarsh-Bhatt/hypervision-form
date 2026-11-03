@@ -188,6 +188,52 @@ async def delete_form(
     }
 
 
+@router.get("/public/{slug}")
+async def get_public_form(slug: str):
+    if not slug or len(slug) > 100 or not slug.isalnum():
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid registration link.",
+        )
+
+    token = settings.SUPABASE_ANON_KEY
+
+    forms = await get_supabase_response(
+        "GET",
+        (
+            "forms?select=id,title,description,settings,theme,shareable_slug"
+            f"&shareable_slug=eq.{slug}"
+            "&status=eq.published"
+            "&limit=1"
+        ),
+        token,
+    )
+
+    if not forms:
+        raise HTTPException(
+            status_code=404,
+            detail="This registration form is unavailable.",
+        )
+
+    form = forms[0]
+
+    questions = await get_supabase_response(
+        "GET",
+        (
+            "form_questions?select=id,field_key,question_type,label,"
+            "description,order_index,is_required,validation_rules,options"
+            f"&form_id=eq.{form['id']}"
+            "&order=order_index.asc"
+        ),
+        token,
+    )
+
+    return {
+        "success": True,
+        "form": form,
+        "questions": questions,
+    }
+
 @router.post("/public/{slug}/submit")
 async def submit_public_response(
     slug: str,
