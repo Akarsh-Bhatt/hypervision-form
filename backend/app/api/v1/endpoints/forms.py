@@ -309,3 +309,86 @@ async def submit_public_response(
         "message": "Your registration has been submitted successfully.",
         "response_id": response.json(),
     }
+    
+@router.get("/{form_id}/responses")
+async def get_form_responses(
+    form_id: str,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # Verify that this event belongs to the logged-in creator.
+    forms = await get_supabase_response(
+        "GET",
+        (
+            f"forms?id=eq.{form_id}"
+            f"&creator_id=eq.{current_user['id']}"
+            "&select=id,title,description,status,response_count"
+            "&limit=1"
+        ),
+        token,
+    )
+
+    if not forms:
+        raise HTTPException(status_code=404, detail="Event not found.")
+
+    # Fetch registrations for this event.
+    responses = await get_supabase_response(
+        "GET",
+        (
+            f"form_responses?form_id=eq.{form_id}"
+            "&select=id,sap_id,submitted_at,completion_time_seconds"
+            "&order=submitted_at.desc"
+        ),
+        token,
+    )
+
+    # Fetch the questions for this event.
+    questions = await get_supabase_response(
+        "GET",
+        (
+            f"form_questions?form_id=eq.{form_id}"
+            "&select=id,label,question_type,order_index"
+            "&order=order_index.asc"
+        ),
+        token,
+    )
+
+    answers = []
+
+    # Fetch answers only when registrations exist.
+    if responses:
+        response_ids = ",".join(
+            response["id"] for response in responses
+        )
+
+        answers = await get_supabase_response(
+            "GET",
+            (
+                "form_answers"
+                f"?response_id=in.({response_ids})"
+                "&select=response_id,question_id,answer_value"
+            ),
+            token,
+        )
+
+    # Attach each registration's answers to that registration.
+    answers_by_response = {}
+
+    for answer in answers:
+        response_id = answer["response_id"]
+        answers_by_response.setdefault(response_id, []).append(answer)
+
+    for response in responses:
+        response["answers"] = answers_by_response.get(
+            response["id"], []
+        )
+
+    return {
+        "success": True,
+        "form": forms[0],
+        "questions": questions,
+        "responses": responses,
+    }
+
