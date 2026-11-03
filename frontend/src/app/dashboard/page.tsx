@@ -1,5 +1,6 @@
 
 "use client";
+import { useRouter } from "next/navigation";
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -20,6 +21,7 @@ type EventItem = {
 const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [events, setEvents] = useState<EventItem[]>([]);
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -345,11 +347,11 @@ export default function DashboardPage() {
                   </button>
 
                   <button
-                    disabled
-                    className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-slate-400"
-                  >
-                    <Users size={15} /> View Responses
-                  </button>
+  onClick={() => router.push(`/editor/${event.id}`)}
+  className="flex items-center justify-center gap-2 rounded-lg border p-2 text-sm text-indigo-600 hover:bg-indigo-50"
+>
+  <FileText size={15} /> Manage Form
+</button>
 
                   <button
                     onClick={() => deleteEvent(event)}
