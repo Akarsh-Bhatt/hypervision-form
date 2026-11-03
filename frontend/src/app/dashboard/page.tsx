@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useRouter } from "next/navigation";
@@ -33,6 +32,7 @@ export default function DashboardPage() {
 
   const [events, setEvents] = useState<EventItem[]>([]);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [showCreate, setShowCreate] = useState(false);
   const [editingEvent, setEditingEvent] = useState<EventItem | null>(null);
   const [title, setTitle] = useState("");
@@ -229,14 +229,28 @@ export default function DashboardPage() {
     }
   }
 
-  const filteredEvents = events.filter((event) =>
-    event.title.toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredEvents = events.filter((event) => {
+    const matchesSearch = event.title
+      .toLowerCase()
+      .includes(search.toLowerCase());
+
+    const matchesStatus =
+      statusFilter === "all" || event.status === statusFilter;
+
+    return matchesSearch && matchesStatus;
+  });
 
   const totalResponses = events.reduce(
     (sum, event) => sum + (event.response_count || 0),
     0
   );
+
+  const filters = [
+    { label: "All", value: "all" },
+    { label: "Published", value: "published" },
+    { label: "Drafts", value: "draft" },
+    { label: "Closed", value: "closed" },
+  ];
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -330,6 +344,22 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        <div className="mb-6 flex flex-wrap gap-2">
+          {filters.map((filter) => (
+            <button
+              key={filter.value}
+              onClick={() => setStatusFilter(filter.value)}
+              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                statusFilter === filter.value
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+
         {loading ? (
           <div className="flex justify-center rounded-2xl bg-white p-16">
             <Loader2 className="animate-spin text-indigo-600" size={30} />
@@ -342,14 +372,20 @@ export default function DashboardPage() {
             />
 
             <h3 className="text-lg font-semibold text-slate-900">
-              {search ? "No matching events" : "No events yet"}
+              {search
+                ? "No matching events"
+                : statusFilter !== "all"
+                  ? `No ${statusFilter} events`
+                  : "No events yet"}
             </h3>
 
             <p className="mt-2 text-sm text-slate-500">
-              Create your first event to get started.
+              {search || statusFilter !== "all"
+                ? "Try changing your search or selected filter."
+                : "Create your first event to get started."}
             </p>
 
-            {!search && (
+            {!search && statusFilter === "all" && (
               <button
                 onClick={openCreateModal}
                 className="mt-5 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white"
