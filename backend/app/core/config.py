@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     # CORS configuration
     CORS_ORIGINS: Union[List[str], str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
+    @field_validator("SUPABASE_URL", mode="before")
+    @classmethod
+    def sanitize_supabase_url(cls, v: str) -> str:
+        if isinstance(v, str):
+            clean = v.strip().rstrip("/")
+            if clean.endswith("/rest/v1"):
+                clean = clean[:-8].rstrip("/")
+            return clean
+        return v
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
