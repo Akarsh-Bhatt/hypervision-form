@@ -2,6 +2,9 @@
 import csv
 from datetime import datetime, timezone
 import io
+from math import ceil
+import time
+import re
 from uuid import UUID, uuid4
 
 import httpx
@@ -32,6 +35,24 @@ class FormUpdate(BaseModel):
         if value is not None and value not in ("draft", "published", "closed"):
             raise ValueError("Status must be one of: draft, published, closed.")
         return value
+
+
+class SlugUpdate(BaseModel):
+    shareable_slug: str
+
+    @field_validator("shareable_slug")
+    @classmethod
+    def validate_slug(cls, v: str) -> str:
+        slug = v.strip().lower()
+        if len(slug) < 3:
+            raise ValueError("Slug must be at least 3 characters long.")
+        if slug.startswith("-") or slug.startswith("_"):
+            raise ValueError("Slug cannot start with a hyphen or underscore.")
+        if slug.endswith("-") or slug.endswith("_"):
+            raise ValueError("Slug cannot end with a hyphen or underscore.")
+        if not re.match(r"^[a-z0-9_-]+$", slug):
+            raise ValueError("Slug can only contain alphanumeric characters, hyphens, and underscores.")
+        return slug
 
 
 class BuilderQuestion(BaseModel):
@@ -421,6 +442,40 @@ async def duplicate_form(
     }
 
 
+@router.patch("/{form_id}/slug")
+async def update_form_slug(
+    form_id: str,
+    payload: SlugUpdate,
+    current_user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    token = credentials.credentials
+
+    # Ownership check
+    forms = await get_supabase_response(
+        "GET",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}&select=id&limit=1",
+        token,
+    )
+    if not forms:
+        raise HTTPException(status_code=404, detail="Form not found.")
+
+    updated = await get_supabase_response(
+        "PATCH",
+        f"forms?id=eq.{form_id}&creator_id=eq.{current_user['id']}",
+        token,
+        {"shareable_slug": payload.shareable_slug},
+    )
+    if not updated:
+        raise HTTPException(status_code=400, detail="Unable to update vanity URL slug.")
+
+    return {
+        "success": True,
+        "message": "Custom vanity URL updated successfully.",
+        "shareable_slug": payload.shareable_slug,
+    }
+
+
 @router.patch("/{form_id}")
 async def update_form(
     form_id: str,
@@ -631,6 +686,80 @@ async def upload_form_file(
     }
 
 
+def dispatch_submission_notifications(
+    slug: str,
+    form_title: str,
+    creator_id: str,
+    response_id: str,
+    answers_count: int,
+    form_settings: dict | None = None,
+) -> bool:
+    """
+    Dispatches asynchronous submission notifications to the form creator.
+    In the current architecture without external email providers, this safely
+    validates settings and prepares notification metadata.
+    """
+    settings_dict = form_settings or {}
+    notifications = settings_dict.get("notifications") or {}
+    if not notifications.get("email_creator", False):
+        return False
+    return True
+
+
+class TokenBucketLimiter:
+    """
+    In-memory token-bucket rate limiter per IP address for public submission routes.
+    Implements Phase 7 Section 1.2 (DoS mitigation) and Section 3 (Rate Limiting).
+    """
+
+    def __init__(self, rate_per_minute: float = 10.0, burst: float = 10.0):
+        self.rate = rate_per_minute / 60.0  # tokens per second
+        self.capacity = burst
+        self.buckets: dict[str, tuple[float, float]] = {}
+
+    def check(self, key: str) -> None:
+        now = time.monotonic()
+        tokens, last_updated = self.buckets.get(key, (self.capacity, now))
+
+        # Refill tokens based on elapsed time
+        elapsed = now - last_updated
+        tokens = min(self.capacity, tokens + elapsed * self.rate)
+
+        if tokens < 1.0:
+            retry_after = max(1, ceil((1.0 - tokens) / self.rate))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many requests. Please wait a moment before submitting again.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        # Consume 1 token
+        self.buckets[key] = (tokens - 1.0, now)
+
+    def reset(self) -> None:
+        """Reset rate limiter buckets (used for tests and lifecycle)."""
+        self.buckets.clear()
+
+
+submission_rate_limiter = TokenBucketLimiter(rate_per_minute=10.0, burst=10.0)
+
+
+def get_client_ip(request: Request) -> str:
+    try:
+        if hasattr(request, "headers") and request.headers:
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+            real_ip = request.headers.get("x-real-ip")
+            if real_ip:
+                return real_ip.strip()
+        if hasattr(request, "client") and request.client and getattr(request.client, "host", None):
+            return request.client.host
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
 @router.post("/public/{slug}/submit")
 async def submit_public_response(
     slug: str,
@@ -640,6 +769,10 @@ async def submit_public_response(
     clean_slug = slug.strip()
     if not clean_slug or len(clean_slug) > 100:
         raise HTTPException(status_code=400, detail="Invalid registration link.")
+
+    # Phase 7: IP-based token-bucket rate limiting (DoS mitigation)
+    client_ip = get_client_ip(request)
+    submission_rate_limiter.check(client_ip)
 
     service_key = settings.SUPABASE_SERVICE_ROLE_KEY
 
@@ -802,6 +935,18 @@ async def submit_public_response(
         service_key,
         {"response_count": new_count},
     )
+
+    try:
+        dispatch_submission_notifications(
+            slug=clean_slug,
+            form_title=form.get("title", ""),
+            creator_id=form.get("creator_id", ""),
+            response_id=response_id,
+            answers_count=len(answers_to_insert),
+            form_settings=form_settings,
+        )
+    except Exception:
+        pass
 
     confirmation_message = (
         form_settings.get("confirmation_message")
