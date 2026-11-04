@@ -6,6 +6,34 @@ function sanitizeSupabaseUrl(url: string): string {
 }
 
 export async function middleware(request: NextRequest) {
+  const path = request.nextUrl.pathname;
+
+  const protectedRoute =
+    path.startsWith("/dashboard") || path.startsWith("/editor");
+
+  const authRoute = path === "/login" || path === "/register";
+
+  // Fast-path: Check for existence of Supabase auth session cookies
+  const allCookies = request.cookies.getAll();
+  const hasAuthCookie = allCookies.some(
+    (c) =>
+      c.name.startsWith("sb-") &&
+      (c.name.includes("-auth-token") || c.name.includes("-provider-token"))
+  );
+
+  // 1. FAST ZERO-LATENCY REDIRECT: Protected route requested without auth cookie
+  if (protectedRoute && !hasAuthCookie) {
+    const destination = request.nextUrl.clone();
+    destination.pathname = "/login";
+    destination.searchParams.set("next", path);
+    return NextResponse.redirect(destination);
+  }
+
+  // 2. FAST ZERO-LATENCY PASS: Unauthenticated user visiting login or register
+  if (authRoute && !hasAuthCookie) {
+    return NextResponse.next();
+  }
+
   const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -14,7 +42,6 @@ export async function middleware(request: NextRequest) {
   }
 
   const url = sanitizeSupabaseUrl(rawUrl);
-
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(url, key, {
@@ -36,23 +63,30 @@ export async function middleware(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  const path = request.nextUrl.pathname;
-
-  const protectedRoute =
-    path.startsWith("/dashboard") || path.startsWith("/editor");
-
-  const authRoute = ["/login", "/register"].includes(path);
+  // Verify auth user with a 2-second timeout to prevent any network hanging
+  let user = null;
+  try {
+    const userPromise = supabase.auth.getUser();
+    const timeoutPromise = new Promise<{ data: { user: null } }>((resolve) =>
+      setTimeout(() => resolve({ data: { user: null } }), 2000)
+    );
+    const result = await Promise.race([userPromise, timeoutPromise]);
+    user = result?.data?.user;
+  } catch {
+    user = null;
+  }
 
   if (protectedRoute && !user) {
     const destination = request.nextUrl.clone();
     destination.pathname = "/login";
     destination.searchParams.set("next", path);
 
-    return NextResponse.redirect(destination);
+    const redirectResponse = NextResponse.redirect(destination);
+    response.cookies.getAll().forEach((cookie) => {
+      redirectResponse.cookies.set(cookie.name, cookie.value, cookie);
+    });
+
+    return redirectResponse;
   }
 
   if (authRoute && user) {
@@ -60,7 +94,12 @@ export async function middleware(request: NextRequest) {
     destination.pathname = "/dashboard";
     destination.search = "";
 
-    return NextResponse.redirect(destination);
+    const redirectResponse = NextResponse.redirect(destination);
+    response.cookies.getAll().forEach((cookie) => {
+      redirectResponse.cookies.set(cookie.name, cookie.value, cookie);
+    });
+
+    return redirectResponse;
   }
 
   return response;

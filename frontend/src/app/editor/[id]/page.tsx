@@ -21,6 +21,11 @@ import {
   Radio,
   RotateCcw,
   Share2,
+  GitBranch,
+  Lock,
+  Clock,
+  Globe,
+  Bell,
   Smartphone,
   Star,
   Tablet,
@@ -38,6 +43,14 @@ type QuestionType =
   | "linear_scale"
   | "date"
   | "file_upload";
+
+type LogicRule = {
+  id: string;
+  source_question_id: string;
+  operator: "equals" | "not_equals" | "contains" | "is_empty" | "is_not_empty";
+  value: string;
+  action: "show" | "hide";
+};
 
 type OptionItem = {
   id: string;
@@ -62,6 +75,7 @@ type Question = {
     min_label?: string;
     max_label?: string;
     max_file_size_mb?: number;
+    logic_rules?: LogicRule[];
   };
 };
 
@@ -91,6 +105,24 @@ export default function FormEditorPage() {
   const [confirmationMessage, setConfirmationMessage] = useState("Your response has been recorded.");
   const [primaryColor, setPrimaryColor] = useState("#4f46e5");
   const [backgroundColor, setBackgroundColor] = useState("#f8fafc");
+  const [fontFamily, setFontFamily] = useState<"sans" | "serif" | "mono">("sans");
+  const [headerImageUrl, setHeaderImageUrl] = useState("");
+
+  // Advanced Settings State
+  const [allowMultipleResponses, setAllowMultipleResponses] = useState(true);
+  const [passwordProtection, setPasswordProtection] = useState(false);
+  const [password, setPassword] = useState("");
+  const [closingDate, setClosingDate] = useState("");
+  const [responseLimit, setResponseLimit] = useState("");
+  const [emailCreator, setEmailCreator] = useState(true);
+  const [creatorEmail, setCreatorEmail] = useState("");
+  const [customSlug, setCustomSlug] = useState("");
+  const [slugError, setSlugError] = useState("");
+  const [slugSuccess, setSlugSuccess] = useState("");
+  const [savingSlug, setSavingSlug] = useState(false);
+
+  // Active Logic Drawer
+  const [editingLogicQuestionId, setEditingLogicQuestionId] = useState<string | null>(null);
 
   // Questions State
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -151,13 +183,24 @@ export default function FormEditorPage() {
       setDescription(form.description || "");
       setStatus(form.status || "draft");
       setShareableSlug(form.shareable_slug || "");
+      setCustomSlug(form.shareable_slug || "");
 
       const settings = form.settings || {};
       setConfirmationMessage(settings.confirmation_message || "Your response has been recorded.");
+      setAllowMultipleResponses(settings.allow_multiple_responses ?? true);
+      setPasswordProtection(Boolean(settings.password_protection));
+      setPassword(settings.password || "");
+      setClosingDate(settings.closing_date ? settings.closing_date.slice(0, 16) : "");
+      setResponseLimit(settings.response_limit !== null && settings.response_limit !== undefined ? String(settings.response_limit) : "");
+      const notifs = settings.notifications || {};
+      setEmailCreator(notifs.email_creator ?? true);
+      setCreatorEmail(notifs.creator_email || "");
 
       const theme = form.theme || {};
       setPrimaryColor(theme.primary_color || "#4f46e5");
       setBackgroundColor(theme.background_color || "#f8fafc");
+      setFontFamily(theme.font_family || "sans");
+      setHeaderImageUrl(theme.header_image_url || "");
 
       const loadedQuestions: Question[] = (data.questions || []).map((q: any, idx: number) => ({
         id: q.id || crypto.randomUUID(),
@@ -214,6 +257,15 @@ export default function FormEditorPage() {
     updatedConfirmation = confirmationMessage,
     updatedPrimary = primaryColor,
     updatedBg = backgroundColor,
+    updatedFont = fontFamily,
+    updatedHeaderImg = headerImageUrl,
+    updatedAllowMultiple = allowMultipleResponses,
+    updatedPasswordProtect = passwordProtection,
+    updatedPassword = password,
+    updatedClosingDate = closingDate,
+    updatedLimit = responseLimit,
+    updatedEmailCreator = emailCreator,
+    updatedCreatorEmail = creatorEmail,
   ) => {
     try {
       setSaveStatus("saving");
@@ -225,10 +277,21 @@ export default function FormEditorPage() {
         status: updatedStatus,
         settings: {
           confirmation_message: updatedConfirmation,
+          allow_multiple_responses: updatedAllowMultiple,
+          password_protection: updatedPasswordProtect,
+          password: updatedPassword.trim() || null,
+          closing_date: updatedClosingDate ? new Date(updatedClosingDate).toISOString() : null,
+          response_limit: updatedLimit ? parseInt(updatedLimit, 10) : null,
+          notifications: {
+            email_creator: updatedEmailCreator,
+            creator_email: updatedCreatorEmail.trim() || undefined,
+          },
         },
         theme: {
           primary_color: updatedPrimary,
           background_color: updatedBg,
+          font_family: updatedFont,
+          header_image_url: updatedHeaderImg.trim() || null,
         },
         questions: updatedQuestions.map((q, idx) => ({
           id: q.id,
@@ -260,7 +323,25 @@ export default function FormEditorPage() {
     } catch {
       setSaveStatus("unsaved");
     }
-  }, [formId, title, description, questions, status, confirmationMessage, primaryColor, backgroundColor]);
+  }, [
+    formId,
+    title,
+    description,
+    questions,
+    status,
+    confirmationMessage,
+    primaryColor,
+    backgroundColor,
+    fontFamily,
+    headerImageUrl,
+    allowMultipleResponses,
+    passwordProtection,
+    password,
+    closingDate,
+    responseLimit,
+    emailCreator,
+    creatorEmail,
+  ]);
 
   // Trigger Debounced Autosave on changes
   function scheduleAutosave(newQuestions?: Question[]) {
@@ -277,9 +358,49 @@ export default function FormEditorPage() {
         status,
         confirmationMessage,
         primaryColor,
-        backgroundColor
+        backgroundColor,
+        fontFamily,
+        headerImageUrl,
+        allowMultipleResponses,
+        passwordProtection,
+        password,
+        closingDate,
+        responseLimit,
+        emailCreator,
+        creatorEmail
       );
     }, 800);
+  }
+
+  async function handleUpdateSlug() {
+    if (!customSlug.trim()) return;
+    try {
+      setSavingSlug(true);
+      setSlugError("");
+      setSlugSuccess("");
+
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/api/v1/forms/${formId}/slug`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ shareable_slug: customSlug.trim() }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "Unable to update vanity URL slug.");
+      }
+
+      setShareableSlug(data.shareable_slug);
+      setSlugSuccess("Custom vanity URL updated successfully!");
+    } catch (err) {
+      setSlugError(err instanceof Error ? err.message : "Unable to update slug.");
+    } finally {
+      setSavingSlug(false);
+    }
   }
 
   // 4. Question Mutations
@@ -316,6 +437,10 @@ export default function FormEditorPage() {
     setQuestions(reindexed);
     setActiveQuestionId(newId);
     scheduleAutosave(reindexed);
+  }
+
+  function handleUpdateValidation(id: string, validation_rules: Question['validation_rules']) {
+    handleUpdateQuestion(id, { validation_rules });
   }
 
   function handleUpdateQuestion(id: string, partial: Partial<Question>) {
@@ -632,14 +757,14 @@ export default function FormEditorPage() {
                 : "bg-indigo-600 hover:bg-indigo-700"
             }`}
           >
-            {status === "published" ? "Published ✓" : "Publish Form"}
+            {status === "published" ? "Published Γ£ô" : "Publish Form"}
           </button>
         </div>
       </header>
 
       {/* Theme Drawer */}
       {showThemeDrawer && (
-        <div className="fixed right-4 top-16 z-40 w-72 rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl animate-in slide-in-from-top-3 duration-150">
+        <div className="fixed right-4 top-16 z-40 w-80 max-h-[85vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl animate-in slide-in-from-top-3 duration-150">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-sm font-bold text-slate-800">Theme Options</h3>
             <button
@@ -655,6 +780,22 @@ export default function FormEditorPage() {
               <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
                 Primary Header Accent
               </label>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {["#4F46E5", "#10B981", "#F43F5E", "#F59E0B", "#8B5CF6", "#475569", "#0284C7"].map((hex) => (
+                  <button
+                    key={hex}
+                    type="button"
+                    onClick={() => {
+                      setPrimaryColor(hex);
+                      scheduleAutosave();
+                    }}
+                    className={`h-6 w-6 rounded-full border transition ${
+                      primaryColor.toLowerCase() === hex.toLowerCase() ? "ring-2 ring-indigo-600 ring-offset-1" : ""
+                    }`}
+                    style={{ backgroundColor: hex }}
+                  />
+                ))}
+              </div>
               <div className="mt-2 flex items-center gap-3">
                 <input
                   type="color"
@@ -663,7 +804,7 @@ export default function FormEditorPage() {
                     setPrimaryColor(e.target.value);
                     scheduleAutosave();
                   }}
-                  className="h-9 w-14 cursor-pointer rounded-lg border border-slate-200 p-0.5"
+                  className="h-8 w-12 cursor-pointer rounded-lg border border-slate-200 p-0.5"
                 />
                 <span className="font-mono text-xs text-slate-600 uppercase">{primaryColor}</span>
               </div>
@@ -673,6 +814,29 @@ export default function FormEditorPage() {
               <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
                 Page Background Tint
               </label>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {[
+                  { name: "White", hex: "#FFFFFF" },
+                  { name: "Slate", hex: "#F8FAFC" },
+                  { name: "Zinc", hex: "#F4F4F5" },
+                  { name: "Indigo", hex: "#EEF2FF" },
+                  { name: "Mint", hex: "#F0FDF4" },
+                ].map((item) => (
+                  <button
+                    key={item.hex}
+                    type="button"
+                    onClick={() => {
+                      setBackgroundColor(item.hex);
+                      scheduleAutosave();
+                    }}
+                    className={`h-6 w-6 rounded-full border border-slate-300 transition ${
+                      backgroundColor.toLowerCase() === item.hex.toLowerCase() ? "ring-2 ring-indigo-600 ring-offset-1" : ""
+                    }`}
+                    style={{ backgroundColor: item.hex }}
+                    title={item.name}
+                  />
+                ))}
+              </div>
               <div className="mt-2 flex items-center gap-3">
                 <input
                   type="color"
@@ -681,10 +845,67 @@ export default function FormEditorPage() {
                     setBackgroundColor(e.target.value);
                     scheduleAutosave();
                   }}
-                  className="h-9 w-14 cursor-pointer rounded-lg border border-slate-200 p-0.5"
+                  className="h-8 w-12 cursor-pointer rounded-lg border border-slate-200 p-0.5"
                 />
                 <span className="font-mono text-xs text-slate-600 uppercase">{backgroundColor}</span>
               </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                Font Family
+              </label>
+              <div className="mt-2 grid grid-cols-3 gap-1.5">
+                {[
+                  { id: "sans", label: "Sans", fontClass: "font-sans" },
+                  { id: "serif", label: "Serif", fontClass: "font-serif" },
+                  { id: "mono", label: "Mono", fontClass: "font-mono" },
+                ].map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => {
+                      setFontFamily(f.id as any);
+                      scheduleAutosave();
+                    }}
+                    className={`rounded-xl border py-2 text-xs font-semibold transition ${f.fontClass} ${
+                      fontFamily === f.id
+                        ? "border-indigo-600 bg-indigo-50 text-indigo-700"
+                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                Header Cover Banner URL
+              </label>
+              <input
+                type="url"
+                value={headerImageUrl}
+                onChange={(e) => {
+                  setHeaderImageUrl(e.target.value);
+                  scheduleAutosave();
+                }}
+                placeholder="https://images.unsplash.com/..."
+                className="mt-1.5 w-full rounded-xl border border-slate-200 p-2 text-xs outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+              />
+              {headerImageUrl && (
+                <div className="mt-2 h-20 w-full overflow-hidden rounded-xl border border-slate-200">
+                  <img
+                    src={headerImageUrl}
+                    alt="Cover Banner"
+                    className="h-full w-full object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLElement).style.display = "none";
+                    }}
+                  />
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -693,300 +914,214 @@ export default function FormEditorPage() {
       {/* Main Content Body */}
       {previewMode ? (
         /* LIVE INTERACTIVE PREVIEW SIMULATOR */
-        <div className="flex-1 p-4 md:p-8 flex flex-col items-center">
-          {/* Viewport Switcher */}
-          <div className="mb-6 flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
-            <button
-              onClick={() => setPreviewViewport("desktop")}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                previewViewport === "desktop"
-                  ? "bg-indigo-600 text-white"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <Monitor size={14} />
-              <span>Desktop</span>
-            </button>
-            <button
-              onClick={() => setPreviewViewport("tablet")}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                previewViewport === "tablet"
-                  ? "bg-indigo-600 text-white"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <Tablet size={14} />
-              <span>Tablet</span>
-            </button>
-            <button
-              onClick={() => setPreviewViewport("mobile")}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                previewViewport === "mobile"
-                  ? "bg-indigo-600 text-white"
-                  : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <Smartphone size={14} />
-              <span>Mobile</span>
-            </button>
+        /* SETTINGS TAB */
+        <div className="flex-1 p-6 md:p-10 max-w-3xl mx-auto w-full space-y-6">
+          {/* Header Card */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm">
+            <h2 className="text-xl font-bold text-slate-900">Form Settings & Advanced Access</h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Configure vanity links, security gatekeeping, expiration rules, and notification alerts
+            </p>
           </div>
 
-          {/* Form Frame */}
-          <div
-            className={`w-full transition-all duration-300 ${
-              previewViewport === "mobile"
-                ? "max-w-sm rounded-[36px] border-[10px] border-slate-900 bg-white p-4 shadow-2xl"
-                : previewViewport === "tablet"
-                ? "max-w-xl rounded-2xl border border-slate-200 bg-white p-6 shadow-md"
-                : "max-w-2xl"
-            }`}
-          >
-            {previewSubmitted ? (
-              <div className="rounded-2xl border border-emerald-200 bg-white p-8 text-center shadow-sm">
-                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-                  <Check size={24} />
-                </div>
-                <h2 className="text-xl font-bold text-slate-900">{title}</h2>
-                <p className="mt-2 text-sm text-slate-600">{confirmationMessage}</p>
-                <button
-                  onClick={() => {
-                    setPreviewSubmitted(false);
-                    setPreviewAnswers({});
-                  }}
-                  className="mt-6 text-xs font-semibold text-indigo-600 hover:underline"
-                >
-                  Submit another response (Preview)
-                </button>
-              </div>
-            ) : (
-              <>
-                {/* Header Hero */}
-                <div
-                  className="rounded-2xl border-t-[7px] bg-white p-7 shadow-sm mb-4"
-                  style={{ borderTopColor: primaryColor }}
-                >
-                  <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900">{title || "Untitled Form"}</h1>
-                  {description && <p className="mt-2 text-sm text-slate-600 leading-relaxed">{description}</p>}
-                  <p className="mt-4 text-xs font-semibold text-rose-500">* Indicates required question</p>
-                </div>
+          {/* Vanity URL Slug Manager */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm space-y-4">
+            <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+              <Globe size={18} className="text-indigo-600" />
+              <span>Custom Vanity URL Slug</span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Customize your public form URL so respondents receive a memorable, branded registration link.
+            </p>
 
-                {/* Questions List */}
-                <div className="space-y-4">
-                  {questions.map((q, idx) => (
-                    <div key={q.id} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                      <div className="mb-3">
-                        <label className="text-base font-bold text-slate-900">
-                          {idx + 1}. {q.label || "Untitled Question"}
-                          {q.is_required && <span className="ml-1 text-rose-500">*</span>}
-                        </label>
-                        {q.description && <p className="mt-1 text-xs text-slate-500">{q.description}</p>}
-                      </div>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <span className="font-mono text-xs text-slate-400 bg-slate-50 px-3 py-2.5 rounded-xl border border-slate-200 select-all">
+                {typeof window !== "undefined" ? window.location.origin : ""}/f/
+              </span>
+              <input
+                type="text"
+                value={customSlug}
+                onChange={(e) => {
+                  setCustomSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, ""));
+                  setSlugError("");
+                  setSlugSuccess("");
+                }}
+                placeholder="my-custom-form"
+                className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-mono outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+              />
+              <button
+                type="button"
+                onClick={handleUpdateSlug}
+                disabled={savingSlug || !customSlug.trim() || customSlug === shareableSlug}
+                className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50 transition"
+              >
+                {savingSlug ? "Updating..." : "Update Slug"}
+              </button>
+            </div>
 
-                      {/* Short Answer */}
-                      {q.question_type === "short_text" && (
-                        <input
-                          value={previewAnswers[q.id] || ""}
-                          onChange={(e) => handlePreviewAnswerChange(q.id, e.target.value)}
-                          placeholder="Your answer"
-                          className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
-                        />
-                      )}
-
-                      {/* Paragraph */}
-                      {q.question_type === "long_text" && (
-                        <textarea
-                          value={previewAnswers[q.id] || ""}
-                          onChange={(e) => handlePreviewAnswerChange(q.id, e.target.value)}
-                          placeholder="Your answer"
-                          rows={3}
-                          className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
-                        />
-                      )}
-
-                      {/* Multiple Choice */}
-                      {q.question_type === "multiple_choice" && (
-                        <div className="space-y-2.5">
-                          {q.options.map((opt) => (
-                            <label
-                              key={opt.id}
-                              className="flex items-center gap-3 text-sm text-slate-700 cursor-pointer p-1 hover:bg-slate-50 rounded-lg"
-                            >
-                              <input
-                                type="radio"
-                                name={`preview_${q.id}`}
-                                checked={previewAnswers[q.id] === opt.value}
-                                onChange={() => handlePreviewAnswerChange(q.id, opt.value)}
-                                className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                              />
-                              <span>{opt.label}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Checkboxes */}
-                      {q.question_type === "checkboxes" && (
-                        <div className="space-y-2.5">
-                          {q.options.map((opt) => {
-                            const isChecked = Array.isArray(previewAnswers[q.id]) && previewAnswers[q.id].includes(opt.value);
-                            return (
-                              <label
-                                key={opt.id}
-                                className="flex items-center gap-3 text-sm text-slate-700 cursor-pointer p-1 hover:bg-slate-50 rounded-lg"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => handlePreviewCheckboxToggle(q.id, opt.value)}
-                                  className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                                />
-                                <span>{opt.label}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* Dropdown */}
-                      {q.question_type === "dropdown" && (
-                        <select
-                          value={previewAnswers[q.id] || ""}
-                          onChange={(e) => handlePreviewAnswerChange(q.id, e.target.value)}
-                          className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-600 cursor-pointer"
-                        >
-                          <option value="">Choose an option</option>
-                          {q.options.map((opt) => (
-                            <option key={opt.id} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-
-                      {/* Linear Scale / Rating */}
-                      {q.question_type === "linear_scale" && (
-                        <div className="space-y-2 pt-2">
-                          <div className="flex items-center justify-between text-xs font-medium text-slate-500 px-1">
-                            <span>{q.validation_rules?.min_label || "1"}</span>
-                            <span>{q.validation_rules?.max_label || "5"}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {[1, 2, 3, 4, 5].map((val) => (
-                              <button
-                                key={val}
-                                type="button"
-                                onClick={() => handlePreviewAnswerChange(q.id, val)}
-                                className={`flex-1 h-11 rounded-xl border text-sm font-bold transition ${
-                                  previewAnswers[q.id] === val
-                                    ? "border-indigo-600 bg-indigo-600 text-white shadow-sm"
-                                    : "border-slate-200 bg-white text-slate-700 hover:border-indigo-300"
-                                }`}
-                              >
-                                {val}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Date */}
-                      {q.question_type === "date" && (
-                        <input
-                          type="date"
-                          value={previewAnswers[q.id] || ""}
-                          onChange={(e) => handlePreviewAnswerChange(q.id, e.target.value)}
-                          className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-700 outline-none focus:border-indigo-600"
-                        />
-                      )}
-
-                      {/* File Upload */}
-                      {q.question_type === "file_upload" && (
-                        <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/50 p-6 text-center text-xs text-slate-500">
-                          <UploadCloud size={24} className="mb-2 text-indigo-500" />
-                          <span className="font-medium text-slate-700">Upload Attachment</span>
-                          <span className="mt-1 text-[11px] text-slate-400">Max size: {q.validation_rules?.max_file_size_mb || 10} MB</span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Simulated Submit Button */}
-                <div className="mt-6 flex items-center justify-between">
-                  <button
-                    onClick={() => setPreviewSubmitted(true)}
-                    className="rounded-xl bg-indigo-600 px-6 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 transition"
-                  >
-                    Submit (Simulation)
-                  </button>
-                  <button
-                    onClick={() => setPreviewAnswers({})}
-                    className="text-xs font-semibold text-slate-500 hover:text-slate-800"
-                  >
-                    Clear form
-                  </button>
-                </div>
-
-                <div className="my-8 text-center text-xs text-slate-400 font-medium">
-                  Hypervision Form Platform Simulator • Never submit passwords
-                </div>
-              </>
+            {slugError && (
+              <p className="text-xs font-medium text-rose-600 animate-in fade-in">{slugError}</p>
+            )}
+            {slugSuccess && (
+              <p className="text-xs font-medium text-emerald-600 animate-in fade-in">{slugSuccess}</p>
             )}
           </div>
-        </div>
-      ) : activeTab === "settings" ? (
-        /* SETTINGS TAB */
-        <div className="flex-1 p-6 md:p-10 max-w-3xl mx-auto w-full">
-          <div className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm space-y-6">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">Form Settings</h2>
-              <p className="text-xs text-slate-500 mt-1">Configure post-submission messaging and lifecycle parameters</p>
+
+          {/* Access Control & Expiration */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm space-y-5">
+            <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+              <Lock size={18} className="text-indigo-600" />
+              <span>Access Control & Lifecycle Gatekeeping</span>
             </div>
 
-            <hr className="border-slate-100" />
+            {/* Password Protection */}
+            <div className="border border-slate-100 rounded-xl p-4 bg-slate-50/50 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800">Password Protection</h4>
+                  <p className="text-xs text-slate-500">Require respondents to enter a password before viewing questions</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={passwordProtection}
+                  onChange={(e) => {
+                    setPasswordProtection(e.target.checked);
+                    scheduleAutosave();
+                  }}
+                  className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+              </div>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-2">
-                Confirmation / Thank You Message
-              </label>
-              <textarea
-                value={confirmationMessage}
+              {passwordProtection && (
+                <div className="pt-2 animate-in fade-in">
+                  <input
+                    type="text"
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      scheduleAutosave();
+                    }}
+                    placeholder="Enter access password"
+                    className="w-full sm:w-64 rounded-xl border border-slate-200 p-2 text-xs outline-none focus:border-indigo-600 bg-white"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Scheduled Expiration */}
+            <div className="border border-slate-100 rounded-xl p-4 bg-slate-50/50 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800">Scheduled Closing Date & Time</h4>
+                  <p className="text-xs text-slate-500">Automatically close form submissions when this timestamp arrives</p>
+                </div>
+                <Clock size={16} className="text-slate-400" />
+              </div>
+              <input
+                type="datetime-local"
+                value={closingDate}
                 onChange={(e) => {
-                  setConfirmationMessage(e.target.value);
+                  setClosingDate(e.target.value);
                   scheduleAutosave();
                 }}
-                rows={3}
-                placeholder="Your response has been recorded."
-                className="w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+                className="rounded-xl border border-slate-200 p-2 text-xs outline-none focus:border-indigo-600 bg-white"
               />
-              <p className="mt-1.5 text-xs text-slate-400">Displayed to respondents immediately upon successful form submission.</p>
             </div>
 
-            <hr className="border-slate-100" />
-
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-2">
-                Form Publication Status
-              </label>
-              <div className="flex items-center gap-3">
-                <span
-                  className={`rounded-full px-3 py-1 text-xs font-semibold capitalize border ${
-                    status === "published"
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                      : "bg-amber-50 text-amber-700 border-amber-200"
-                  }`}
-                >
-                  {status}
-                </span>
-
-                <button
-                  onClick={handleToggleStatus}
-                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
-                >
-                  {status === "published" ? "Unpublish Form" : "Publish Form"}
-                </button>
+            {/* Response Quota Limit */}
+            <div className="border border-slate-100 rounded-xl p-4 bg-slate-50/50 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800">Response Cap / Quota</h4>
+                  <p className="text-xs text-slate-500">Close the form automatically once this number of submissions is reached</p>
+                </div>
               </div>
+              <input
+                type="number"
+                min="1"
+                value={responseLimit}
+                onChange={(e) => {
+                  setResponseLimit(e.target.value);
+                  scheduleAutosave();
+                }}
+                placeholder="Unlimited responses (leave empty)"
+                className="w-full sm:w-64 rounded-xl border border-slate-200 p-2 text-xs outline-none focus:border-indigo-600 bg-white"
+              />
             </div>
+
+            {/* Multiple Submissions */}
+            <div className="flex items-center justify-between border-t border-slate-100 pt-3">
+              <div>
+                <h4 className="text-xs font-bold text-slate-800">Allow Multiple Submissions</h4>
+                <p className="text-xs text-slate-500">Allow respondents to submit more than one response</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={allowMultipleResponses}
+                onChange={(e) => {
+                  setAllowMultipleResponses(e.target.checked);
+                  scheduleAutosave();
+                }}
+                className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+              />
+            </div>
+          </div>
+
+          {/* Submission Alerts */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm space-y-4">
+            <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+              <Bell size={18} className="text-indigo-600" />
+              <span>Submission Notification Pipeline</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-slate-800">Email Alerts on New Submissions</h4>
+                <p className="text-xs text-slate-500">Dispatch an immediate background notification when a respondent submits</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={emailCreator}
+                onChange={(e) => {
+                  setEmailCreator(e.target.checked);
+                  scheduleAutosave();
+                }}
+                className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+              />
+            </div>
+
+            {emailCreator && (
+              <div className="pt-2 animate-in fade-in">
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Recipient Alert Email (Optional override)
+                </label>
+                <input
+                  type="email"
+                  value={creatorEmail}
+                  onChange={(e) => {
+                    setCreatorEmail(e.target.value);
+                    scheduleAutosave();
+                  }}
+                  placeholder="Defaults to your account email"
+                  className="w-full rounded-xl border border-slate-200 p-2 text-xs outline-none focus:border-indigo-600"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Post-Submission Messaging */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold text-slate-900">Confirmation / Thank You Message</h3>
+            <textarea
+              value={confirmationMessage}
+              onChange={(e) => {
+                setConfirmationMessage(e.target.value);
+                scheduleAutosave();
+              }}
+              rows={3}
+              placeholder="Your response has been recorded."
+              className="w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+            />
+            <p className="text-xs text-slate-400">Displayed to respondents immediately upon successful form submission.</p>
           </div>
         </div>
       ) : (
@@ -1247,6 +1382,30 @@ export default function FormEditorPage() {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              setEditingLogicQuestionId(
+                                editingLogicQuestionId === q.id ? null : q.id
+                              );
+                            }}
+                            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition border ${
+                              q.validation_rules?.logic_rules?.length
+                                ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                                : "border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                            }`}
+                            title="Configure conditional logic rules (DAG)"
+                          >
+                            <GitBranch size={14} />
+                            <span>Logic</span>
+                            {q.validation_rules?.logic_rules?.length ? (
+                              <span className="ml-1 rounded-full bg-indigo-600 px-1.5 py-0.2 text-[10px] text-white">
+                                {q.validation_rules.logic_rules.length}
+                              </span>
+                            ) : null}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               handleDuplicateQuestion(q.id);
                             }}
                             className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition"
@@ -1293,7 +1452,144 @@ export default function FormEditorPage() {
                               />
                             </div>
                           </label>
+                        
+                  {/* Conditional Logic Drawer (DAG) */}
+                  {isActive && editingLogicQuestionId === q.id && (
+                    <div className="mt-4 border-t border-indigo-100 bg-indigo-50/40 p-4 rounded-xl animate-in fade-in duration-150">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <GitBranch size={16} className="text-indigo-600" />
+                          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                            Conditional Logic & Skip Branching
+                          </h4>
                         </div>
+                        <span className="text-[11px] text-slate-400">DAG Rule Engine</span>
+                      </div>
+
+                      {(() => {
+                        const predecessors = questions.filter((p) => p.order_index < q.order_index);
+                        const currentRule = q.validation_rules?.logic_rules?.[0];
+
+                        if (predecessors.length === 0) {
+                          return (
+                            <p className="text-xs text-slate-500 italic">
+                              This is the first question in the form. Conditional logic can only depend on predecessor questions to guarantee no cyclic loops.
+                            </p>
+                          );
+                        }
+
+                        return (
+                          <div className="space-y-3">
+                            <p className="text-xs text-slate-600">
+                              Display this question <span className="font-semibold text-indigo-600">only if</span> the respondent's answer satisfies:
+                            </p>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <select
+                                value={currentRule?.source_question_id || ""}
+                                onChange={(e) => {
+                                  const sourceId = e.target.value;
+                                  if (!sourceId) {
+                                    handleUpdateValidation(q.id, {
+                                      ...q.validation_rules,
+                                      logic_rules: [],
+                                    });
+                                    return;
+                                  }
+                                  const updatedRules: LogicRule[] = [
+                                    {
+                                      id: crypto.randomUUID(),
+                                      source_question_id: sourceId,
+                                      operator: currentRule?.operator || "equals",
+                                      value: currentRule?.value || "",
+                                      action: "show",
+                                    },
+                                  ];
+                                  handleUpdateValidation(q.id, {
+                                    ...q.validation_rules,
+                                    logic_rules: updatedRules,
+                                  });
+                                }}
+                                className="rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-800 outline-none focus:border-indigo-600"
+                              >
+                                <option value="">Select prior question...</option>
+                                {predecessors.map((p, pIdx) => (
+                                  <option key={p.id} value={p.id}>
+                                    {pIdx + 1}. {p.label.slice(0, 35)}
+                                  </option>
+                                ))}
+                              </select>
+
+                              <select
+                                value={currentRule?.operator || "equals"}
+                                disabled={!currentRule?.source_question_id}
+                                onChange={(e) => {
+                                  if (!currentRule) return;
+                                  const updatedRules: LogicRule[] = [
+                                    {
+                                      ...currentRule,
+                                      operator: e.target.value as any,
+                                    },
+                                  ];
+                                  handleUpdateValidation(q.id, {
+                                    ...q.validation_rules,
+                                    logic_rules: updatedRules,
+                                  });
+                                }}
+                                className="rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-800 outline-none focus:border-indigo-600 disabled:opacity-50"
+                              >
+                                <option value="equals">Equals</option>
+                                <option value="not_equals">Does not equal</option>
+                                <option value="contains">Contains text</option>
+                                <option value="is_empty">Is empty / skipped</option>
+                                <option value="is_not_empty">Is answered</option>
+                              </select>
+
+                              {currentRule?.operator !== "is_empty" && currentRule?.operator !== "is_not_empty" && (
+                                <input
+                                  type="text"
+                                  placeholder="Expected answer value"
+                                  value={currentRule?.value || ""}
+                                  disabled={!currentRule?.source_question_id}
+                                  onChange={(e) => {
+                                    if (!currentRule) return;
+                                    const updatedRules: LogicRule[] = [
+                                      {
+                                        ...currentRule,
+                                        value: e.target.value,
+                                      },
+                                    ];
+                                    handleUpdateValidation(q.id, {
+                                      ...q.validation_rules,
+                                      logic_rules: updatedRules,
+                                    });
+                                  }}
+                                  className="rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-800 outline-none focus:border-indigo-600 disabled:opacity-50"
+                                />
+                              )}
+                            </div>
+
+                            {currentRule && (
+                              <div className="flex justify-end pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleUpdateValidation(q.id, {
+                                      ...q.validation_rules,
+                                      logic_rules: [],
+                                    });
+                                  }}
+                                  className="text-xs text-rose-600 hover:text-rose-700 font-medium"
+                                >
+                                  Remove Rule
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}</div>
                       </div>
                     ) : (
                       /* Inactive Compact View */

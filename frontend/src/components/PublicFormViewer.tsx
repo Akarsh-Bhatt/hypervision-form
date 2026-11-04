@@ -21,6 +21,14 @@ export type QuestionOption = {
   value: string;
 };
 
+export type LogicRule = {
+  id: string;
+  source_question_id: string;
+  operator: "equals" | "not_equals" | "contains" | "is_empty" | "is_not_empty";
+  value: string;
+  action: "show" | "hide";
+};
+
 export type QuestionRules = {
   min_length?: number;
   max_length?: number;
@@ -32,6 +40,7 @@ export type QuestionRules = {
   max_file_size_mb?: number;
   low_label?: string;
   high_label?: string;
+  logic_rules?: LogicRule[];
 };
 
 export type PublicQuestion = {
@@ -58,6 +67,8 @@ export type PublicFormSettings = {
   allow_multiple_responses?: boolean;
   closing_date?: string | null;
   response_limit?: number | null;
+  password_protection?: boolean;
+  password?: string | null;
 };
 
 export type PublicFormData = {
@@ -115,6 +126,19 @@ export default function PublicFormViewer({
 
   const primaryColor = form.theme?.primary_color || "#4F46E5";
   const bgColor = form.theme?.background_color || "#F8FAFC";
+  const fontFamily = form.theme?.font_family || "sans";
+  const fontClass =
+    fontFamily === "serif"
+      ? "font-serif"
+      : fontFamily === "mono"
+      ? "font-mono"
+      : "font-sans";
+
+  const [enteredPassword, setEnteredPassword] = useState("");
+  const [isUnlocked, setIsUnlocked] = useState(
+    !form.settings?.password_protection || !form.settings?.password
+  );
+  const [passwordError, setPasswordError] = useState("");
 
   // 1. GATEKEEPING SCREENS (Closed, Draft, Quota, Expired)
   if (!lifecycle.is_open) {
@@ -153,6 +177,74 @@ export default function PublicFormViewer({
             <p className="text-xs text-slate-400">
               Powered by <span className="font-semibold text-slate-700">Hypervision Form</span>
             </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // 1.5. PASSWORD GATEKEEPING SCREEN
+  if (!isUnlocked) {
+    return (
+      <main
+        className={`min-h-screen px-4 py-12 flex items-center justify-center ${fontClass}`}
+        style={{ backgroundColor: bgColor }}
+      >
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
+          <div
+            className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl text-white shadow-md"
+            style={{ backgroundColor: primaryColor }}
+          >
+            <Lock size={26} />
+          </div>
+          <h1 className="text-xl font-bold text-center text-slate-900">Password Protected Form</h1>
+          <p className="mt-2 text-center text-xs text-slate-500">
+            This form is secured. Please enter the creator's access password to continue.
+          </p>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (enteredPassword.trim() === form.settings?.password) {
+                setIsUnlocked(true);
+                setPasswordError("");
+              } else {
+                setPasswordError("Incorrect password. Please verify and try again.");
+              }
+            }}
+            className="mt-6 space-y-4"
+          >
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                Form Password
+              </label>
+              <input
+                type="password"
+                value={enteredPassword}
+                onChange={(e) => {
+                  setEnteredPassword(e.target.value);
+                  setPasswordError("");
+                }}
+                placeholder="Enter password"
+                className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+                autoFocus
+              />
+              {passwordError && (
+                <p className="mt-1.5 text-xs font-medium text-rose-600">{passwordError}</p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              className="w-full rounded-xl py-2.5 text-xs font-semibold text-white shadow-sm transition hover:opacity-90"
+              style={{ backgroundColor: primaryColor }}
+            >
+              Unlock and Continue
+            </button>
+          </form>
+
+          <div className="mt-8 border-t pt-5 text-center text-xs text-slate-400">
+            Hypervision Form Security Engine
           </div>
         </div>
       </main>
@@ -214,6 +306,58 @@ export default function PublicFormViewer({
         </div>
       </main>
     );
+  }
+
+  // CONDITIONAL LOGIC EVALUATOR (DAG Engine)
+  function isQuestionVisible(q: PublicQuestion): boolean {
+    const rules = q.validation_rules?.logic_rules;
+    if (!rules || rules.length === 0) return true;
+
+    for (const rule of rules) {
+      const sourceAnswer = answers[rule.source_question_id];
+      let matches = false;
+
+      if (rule.operator === "is_empty") {
+        matches =
+          sourceAnswer === undefined ||
+          sourceAnswer === null ||
+          sourceAnswer === "" ||
+          (Array.isArray(sourceAnswer) && sourceAnswer.length === 0);
+      } else if (rule.operator === "is_not_empty") {
+        matches =
+          sourceAnswer !== undefined &&
+          sourceAnswer !== null &&
+          sourceAnswer !== "" &&
+          (!Array.isArray(sourceAnswer) || sourceAnswer.length > 0);
+      } else if (rule.operator === "equals") {
+        if (Array.isArray(sourceAnswer)) {
+          matches = sourceAnswer.includes(rule.value);
+        } else {
+          matches = String(sourceAnswer ?? "").toLowerCase() === rule.value.toLowerCase();
+        }
+      } else if (rule.operator === "not_equals") {
+        if (Array.isArray(sourceAnswer)) {
+          matches = !sourceAnswer.includes(rule.value);
+        } else {
+          matches = String(sourceAnswer ?? "").toLowerCase() !== rule.value.toLowerCase();
+        }
+      } else if (rule.operator === "contains") {
+        if (Array.isArray(sourceAnswer)) {
+          matches = sourceAnswer.some((val) =>
+            String(val).toLowerCase().includes(rule.value.toLowerCase())
+          );
+        } else {
+          matches = String(sourceAnswer ?? "")
+            .toLowerCase()
+            .includes(rule.value.toLowerCase());
+        }
+      }
+
+      if (rule.action === "show" && !matches) return false;
+      if (rule.action === "hide" && matches) return false;
+    }
+
+    return true;
   }
 
   // 3. VALIDATION HELPER
@@ -346,7 +490,8 @@ export default function PublicFormViewer({
     const newErrors: Record<string, string> = {};
     let firstInvalidId: string | null = null;
 
-    for (const q of questions) {
+    const visibleQuestions = questions.filter(isQuestionVisible);
+    for (const q of visibleQuestions) {
       const err = validateQuestion(q, answers[q.id]);
       if (err) {
         newErrors[q.id] = err;
@@ -370,11 +515,11 @@ export default function PublicFormViewer({
         (Date.now() - startTimeRef.current) / 1000
       );
 
-      const formattedAnswers = Object.entries(answers)
-        .filter(([, val]) => val !== undefined && val !== null && val !== "")
-        .map(([qId, val]) => ({
-          question_id: qId,
-          answer_value: val,
+      const formattedAnswers = visibleQuestions
+        .filter((q) => answers[q.id] !== undefined && answers[q.id] !== null && answers[q.id] !== "")
+        .map((q) => ({
+          question_id: q.id,
+          answer_value: answers[q.id],
         }));
 
       const payload = {
@@ -409,7 +554,7 @@ export default function PublicFormViewer({
 
   return (
     <main
-      className="min-h-screen px-4 py-8 sm:py-12"
+      className={`min-h-screen px-4 py-8 sm:py-12 ${fontClass}`}
       style={{ backgroundColor: bgColor }}
     >
       <div className="mx-auto max-w-2xl">
@@ -477,7 +622,7 @@ export default function PublicFormViewer({
           </div>
 
           {/* Render All 8 Questions */}
-          {questions.map((q, idx) => {
+          {questions.filter(isQuestionVisible).map((q, idx) => {
             const error = errors[q.id];
             const currentVal = answers[q.id];
 

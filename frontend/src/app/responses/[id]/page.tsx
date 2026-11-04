@@ -172,6 +172,32 @@ export default function ResponsesPage() {
     if (formId) loadAllData();
   }, [formId]);
 
+  // Supabase Realtime Subscription for Live Incoming Submissions
+  useEffect(() => {
+    if (!formId) return;
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`realtime-responses-${formId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'form_responses',
+          filter: `form_id=eq.${formId}`,
+        },
+        () => {
+          setNotice('New response received in real time!');
+          loadAllData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [formId]);
+
   // Status Toggle (Accepting Responses)
   async function handleToggleStatus() {
     if (!form || togglingStatus) return;
@@ -389,6 +415,10 @@ export default function ResponsesPage() {
                   }`}
                 >
                   {form?.status === "published" ? "Accepting responses" : "Closed"}
+                </span>
+                <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Live Sync
                 </span>
               </div>
               <p className="text-xs text-slate-500">

@@ -133,6 +133,29 @@ export default function DashboardPage() {
     loadForms();
   }, []);
 
+  // Realtime live updates for submissions across creator forms
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase
+      .channel('dashboard-realtime-submissions')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'form_responses',
+        },
+        () => {
+          loadForms();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
   function openCreateModal() {
     setTitle("");
     setDescription("");
