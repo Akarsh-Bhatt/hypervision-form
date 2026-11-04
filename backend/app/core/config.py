@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_PREFIX: str = "/api/v1"
     ENVIRONMENT: str = "development"
+    LOG_LEVEL: str = "INFO"
 
     # Server settings
     BACKEND_HOST: str = "0.0.0.0"
