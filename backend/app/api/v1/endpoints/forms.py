@@ -637,6 +637,98 @@ async def get_public_form(slug: str):
     }
 
 
+ALLOWED_UPLOAD_EXTENSIONS = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+}
+
+
+def validate_upload_content(content: bytes, ext: str) -> str:
+    """Validates magic bytes and file structure against allowed extension."""
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # 1. Reject explicit executable and binary script signatures
+    dangerous_magic = [
+        b"MZ",  # Windows PE/EXE/DLL
+        b"\x7fELF",  # Linux ELF
+        b"\xca\xfe\xba\xbe",  # Java class / Mach-O fat
+        b"\xce\xfa\xed\xfe",  # Mach-O 32
+        b"\xcf\xfa\xed\xfe",  # Mach-O 64
+        b"\xfe\xed\xfa\xce",
+        b"\xfe\xed\xfa\xcf",
+        b"#!",  # Shell script shebang
+    ]
+    for d_magic in dangerous_magic:
+        if content.startswith(d_magic):
+            raise HTTPException(status_code=400, detail="Executable files are strictly prohibited.")
+
+    # Check for script or HTML injection tags (case-insensitive check on initial chunk)
+    sample = content[:512].lower()
+    dangerous_tags = [b"<script", b"<html", b"<!doctype html", b"<svg", b"<?php", b"<%", b"javascript:"]
+    for tag in dangerous_tags:
+        if tag in sample:
+            raise HTTPException(status_code=400, detail="Files containing script or markup tags are not permitted.")
+
+    # 2. Verify signature according to extension
+    if ext == ".pdf":
+        if not content.startswith(b"%PDF-"):
+            raise HTTPException(status_code=400, detail="Invalid PDF file signature.")
+        return "application/pdf"
+
+    elif ext == ".png":
+        if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(status_code=400, detail="Invalid PNG file signature.")
+        return "image/png"
+
+    elif ext in (".jpg", ".jpeg"):
+        if not content.startswith(b"\xff\xd8\xff"):
+            raise HTTPException(status_code=400, detail="Invalid JPEG file signature.")
+        return "image/jpeg"
+
+    elif ext == ".gif":
+        if not (content.startswith(b"GIF87a") or content.startswith(b"GIF89a")):
+            raise HTTPException(status_code=400, detail="Invalid GIF file signature.")
+        return "image/gif"
+
+    elif ext == ".webp":
+        if not (content.startswith(b"RIFF") and len(content) >= 12 and content[8:12] == b"WEBP"):
+            raise HTTPException(status_code=400, detail="Invalid WebP file signature.")
+        return "image/webp"
+
+    elif ext in (".docx", ".xlsx"):
+        if not content.startswith(b"PK\x03\x04"):
+            raise HTTPException(status_code=400, detail=f"Invalid {ext[1:].upper()} file signature.")
+        return (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if ext == ".docx"
+            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    elif ext in (".txt", ".csv"):
+        check_chunk = content[:1024]
+        if b"\x00" in check_chunk:
+            raise HTTPException(status_code=400, detail=f"Binary content is not permitted for {ext} files.")
+        try:
+            check_chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                check_chunk.decode("latin-1")
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Invalid text encoding for {ext} file.")
+        return "text/csv" if ext == ".csv" else "text/plain"
+
+    raise HTTPException(status_code=400, detail="Unsupported file format.")
+
+
 @router.post("/public/{slug}/upload")
 async def upload_form_file(
     slug: str,
@@ -654,14 +746,24 @@ async def upload_form_file(
             detail="File size exceeds the 10MB limit.",
         )
 
-    safe_name = "".join(c for c in (file.filename or "file") if c.isalnum() or c in "._-")
+    filename = file.filename or ""
+    ext = ("." + filename.rsplit(".", 1)[-1]).lower() if "." in filename else ""
+    if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File extension '{ext or 'none'}' is not permitted.",
+        )
+
+    validated_content_type = validate_upload_content(content, ext)
+
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "._-")
     file_path = f"{clean_slug}/{uuid4().hex}_{safe_name}"
 
     service_key = settings.SUPABASE_SERVICE_ROLE_KEY
     headers = {
         "apikey": service_key,
         "Authorization": f"Bearer {service_key}",
-        "Content-Type": file.content_type or "application/octet-stream",
+        "Content-Type": validated_content_type,
     }
 
     public_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/respondent-uploads/{file_path}"
