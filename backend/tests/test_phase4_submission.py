@@ -174,5 +174,9 @@ def run_tests():
     print("All Phase 4 backend unit tests passed successfully!", flush=True)
 
 
+def test_phase4_submission():
+    run_tests()
+
+
 if __name__ == "__main__":
     run_tests()

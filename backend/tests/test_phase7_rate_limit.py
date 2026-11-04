@@ -101,5 +101,9 @@ def run_rate_limit_tests():
     print("\nALL PHASE 7 RATE LIMITING TESTS PASSED SUCCESSFULLY!", flush=True)
 
 
+def test_phase7_rate_limit():
+    run_rate_limit_tests()
+
+
 if __name__ == "__main__":
     run_rate_limit_tests()

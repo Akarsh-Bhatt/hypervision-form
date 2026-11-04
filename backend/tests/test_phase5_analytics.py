@@ -160,6 +160,10 @@ def run_tests():
     print("All Phase 5 backend tests completed successfully!", flush=True)
 
 
+def test_phase5_analytics():
+    run_tests()
+
+
 if __name__ == "__main__":
     run_tests()
 
