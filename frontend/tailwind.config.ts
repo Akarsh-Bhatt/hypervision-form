@@ -11,6 +11,16 @@ const config: Config = {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
+        cyber: {
+          bg: "#040915",
+          surface: "#0a1628",
+          card: "#0b1a32",
+          input: "#060e1d",
+          border: "#152e50",
+          cyan: "#00f0ff",
+          "cyan-hover": "#38bdf8",
+          "cyan-dim": "#0284c7",
+        },
         primary: {
           50: "#eff6ff",
           100: "#dbeafe",
