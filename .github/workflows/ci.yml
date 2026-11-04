@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Job 1: Backend – Python tests
+  # ─────────────────────────────────────────────
+  backend-test:
+    name: Backend Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Run pytest suite
+        env:
+          # Placeholder values match the config defaults – no live Supabase needed
+          SUPABASE_URL: https://placeholder.supabase.co
+          SUPABASE_ANON_KEY: placeholder-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: placeholder-service-role-key
+          ENVIRONMENT: test
+        run: pytest -q --tb=short
+
+  # ─────────────────────────────────────────────
+  # Job 2: Frontend – lint + build
+  # ─────────────────────────────────────────────
+  frontend-validate:
+    name: Frontend Lint & Build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        env:
+          # Suppress Next.js telemetry in CI
+          NEXT_TELEMETRY_DISABLED: "1"
+          # Supabase vars must be present for Next.js build (NEXT_PUBLIC_ are inlined at build time)
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+          NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
+        run: npm run build
+
+  # ─────────────────────────────────────────────
+  # Job 3: Docker – build backend image
+  # ─────────────────────────────────────────────
+  docker-backend:
+    name: Docker Build – Backend
+    runs-on: ubuntu-latest
+    needs: backend-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: false
+          tags: hypervision-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────
+  # Job 4: Docker – build frontend image
+  # ─────────────────────────────────────────────
+  docker-frontend:
+    name: Docker Build – Frontend
+    runs-on: ubuntu-latest
+    needs: frontend-validate
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: false
+          tags: hypervision-frontend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
