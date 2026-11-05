@@ -9,11 +9,9 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
   const protectedRoute =
-    path.startsWith("/dashboard") ||
-    path.startsWith("/editor") ||
-    path.startsWith("/responses");
+    path.startsWith("/dashboard") || path.startsWith("/editor");
 
-  const authRoute = path === "/";
+  const authRoute = path === "/login" || path === "/register";
 
   // Fast-path: Check for existence of Supabase auth session cookies
   const allCookies = request.cookies.getAll();
@@ -26,12 +24,12 @@ export async function middleware(request: NextRequest) {
   // 1. FAST ZERO-LATENCY REDIRECT: Protected route requested without auth cookie
   if (protectedRoute && !hasAuthCookie) {
     const destination = request.nextUrl.clone();
-    destination.pathname = "/";
+    destination.pathname = "/login";
     destination.searchParams.set("next", path);
     return NextResponse.redirect(destination);
   }
 
-  // 2. FAST ZERO-LATENCY PASS: Unauthenticated user visiting landing auth page
+  // 2. FAST ZERO-LATENCY PASS: Unauthenticated user visiting login or register
   if (authRoute && !hasAuthCookie) {
     return NextResponse.next();
   }
@@ -80,7 +78,7 @@ export async function middleware(request: NextRequest) {
 
   if (protectedRoute && !user) {
     const destination = request.nextUrl.clone();
-    destination.pathname = "/";
+    destination.pathname = "/login";
     destination.searchParams.set("next", path);
 
     const redirectResponse = NextResponse.redirect(destination);
@@ -108,6 +106,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/dashboard/:path*", "/editor/:path*"],
+  matcher: ["/dashboard/:path*", "/editor/:path*", "/login", "/register"],
 };
-

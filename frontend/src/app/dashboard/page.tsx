@@ -1,828 +1,788 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import AsciiRainBackdrop from "@/components/AsciiRainBackdrop";
+import {
+  Plus,
+  ClipboardList,
+  Users,
+  Search,
+  Trash2,
+  Copy,
+  Pencil,
+  FileText,
+  Loader2,
+  X,
+  LogOut,
+  Share2,
+  Check,
+} from "lucide-react";
 
-type Form = {
+type FormItem = {
   id: string;
-  creator_id: string;
-  shareable_slug: string;
   title: string;
   description: string;
   status: "draft" | "published" | "closed";
   response_count: number;
-  created_at: string;
+  shareable_slug: string;
   updated_at: string;
 };
 
+type CurrentUser = {
+  id: string;
+  email?: string;
+  name?: string;
+};
+
+const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
+
 export default function DashboardPage() {
   const router = useRouter();
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [forms, setForms] = useState<Form[]>([]);
+
+  const [forms, setForms] = useState<FormItem[]>([]);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingForm, setEditingForm] = useState<FormItem | null>(null);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState<"draft" | "published" | "closed">("draft");
   const [loading, setLoading] = useState(true);
-  const [creatingForm, setCreatingForm] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "published" | "draft" | "closed">("all");
-  const [viewMode, setViewMode] = useState<"grid" | "table">("grid");
-  const [signingOut, setSigningOut] = useState(false);
-  const [togglingId, setTogglingId] = useState<string | null>(null);
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  async function getToken() {
+    const supabase = createClient();
+    const { data, error } = await supabase.auth.getSession();
 
-  // Keyboard shortcut Ctrl+K / Cmd+K to focus search
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
-  // Close menus on outside click
-  useEffect(() => {
-    function handleGlobalClick(e: MouseEvent) {
-      const target = e.target as HTMLElement;
-      if (!target.closest("[data-dropdown]")) {
-        setOpenMenuId(null);
-      }
-    }
-    window.addEventListener("click", handleGlobalClick);
-    return () => window.removeEventListener("click", handleGlobalClick);
-  }, []);
-
-  // Initial Data Fetch
-  useEffect(() => {
-    async function initDashboard() {
-      try {
-        const supabase = createClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-
-        if (!session?.user) {
-          router.push("/");
-          return;
-        }
-
-        setUserEmail(session.user.email || null);
-
-        const { data, error } = await supabase
-          .from("forms")
-          .select("*")
-          .eq("creator_id", session.user.id)
-          .order("updated_at", { ascending: false });
-
-        if (error) {
-          console.error("Error loading forms:", error);
-        } else {
-          setForms(data || []);
-        }
-      } catch (err) {
-        console.error("Dashboard error:", err);
-      } finally {
-        setLoading(false);
-      }
+    if (error || !data.session) {
+      throw new Error("Please log in again to access your dashboard.");
     }
 
-    initDashboard();
-  }, [router]);
+    return data.session.access_token;
+  }
 
-  async function handleCreateForm(templateType: "blank" | "csat" | "application" = "blank") {
-    if (creatingForm) return;
-    setCreatingForm(true);
-
+  async function loadUser() {
     try {
       const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session?.user) {
-        router.push("/");
-        return;
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setCurrentUser({
+          id: user.id,
+          email: user.email,
+          name:
+            user.user_metadata?.full_name ||
+            user.user_metadata?.name ||
+            user.email?.split("@")[0] ||
+            "Creator",
+        });
       }
-
-      const slug = `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-      let initialTitle = "Untitled Form";
-      let initialDesc = "";
-
-      if (templateType === "csat") {
-        initialTitle = "Customer Feedback & CSAT Survey";
-        initialDesc = "Quarterly net promoter survey gathering user sentiment, feature satisfaction, and churn signals.";
-      } else if (templateType === "application") {
-        initialTitle = "Official Membership Intake";
-        initialDesc = "Applicant screening, project focus domain selection, and portfolio credentials.";
-      }
-
-      const { data, error } = await supabase
-        .from("forms")
-        .insert({
-          creator_id: session.user.id,
-          title: initialTitle,
-          description: initialDesc,
-          shareable_slug: slug,
-          status: "draft",
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-      router.push(`/editor/${data.id}`);
-    } catch (err) {
-      console.error("Create form error:", err);
-      alert("Failed to create new form. Please try again.");
-      setCreatingForm(false);
+    } catch {
+      // User fetch fallback
     }
   }
 
-  async function handleDeleteForm(formId: string, formTitle: string) {
-    const confirmed = window.confirm(`Are you sure you want to delete "${formTitle}"? This cannot be undone.`);
+  async function handleSignOut() {
+    try {
+      const supabase = createClient();
+      await supabase.auth.signOut();
+      router.push("/login");
+      router.refresh();
+    } catch {
+      router.push("/login");
+    }
+  }
+
+  async function loadForms() {
+    try {
+      setLoading(true);
+      setError("");
+
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
+
+      const token = await getToken();
+
+      const response = await fetch(`${API_URL}/api/v1/forms/`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to load forms.");
+      }
+
+      setForms(result.forms || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadUser();
+    loadForms();
+  }, []);
+
+  // Realtime live updates for submissions across creator forms
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase
+      .channel('dashboard-realtime-submissions')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'form_responses',
+        },
+        () => {
+          loadForms();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  function openCreateModal() {
+    setTitle("");
+    setDescription("");
+    setStatus("draft");
+    setError("");
+    setNotice("");
+    setShowCreate(true);
+  }
+
+  function openEditModal(form: FormItem) {
+    setTitle(form.title);
+    setDescription(form.description || "");
+    setStatus(form.status);
+    setError("");
+    setNotice("");
+    setEditingForm(form);
+  }
+
+  async function createForm() {
+    if (!title.trim()) return;
+
+    try {
+      setSaving(true);
+      setError("");
+
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
+
+      const token = await getToken();
+
+      const response = await fetch(`${API_URL}/api/v1/forms/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim(),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to create form.");
+      }
+
+      setShowCreate(false);
+      setNotice("Form created successfully.");
+      await loadForms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create form.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function updateForm() {
+    if (!editingForm || !title.trim()) return;
+
+    try {
+      setSaving(true);
+      setError("");
+
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
+
+      const token = await getToken();
+
+      const response = await fetch(
+        `${API_URL}/api/v1/forms/${editingForm.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            title: title.trim(),
+            description: description.trim(),
+            status: status,
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to update form.");
+      }
+
+      setEditingForm(null);
+      setNotice("Form updated successfully.");
+      await loadForms();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update form.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteForm(form: FormItem) {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${form.title}"? This action cannot be undone.`
+    );
+
     if (!confirmed) return;
 
     try {
-      const supabase = createClient();
-      const { error } = await supabase.from("forms").delete().eq("id", formId);
-      if (error) throw error;
-      setForms((prev) => prev.filter((f) => f.id !== formId));
-      setOpenMenuId(null);
+      setDeletingId(form.id);
+      setError("");
+      setNotice("");
+
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
+
+      const token = await getToken();
+
+      const response = await fetch(`${API_URL}/api/v1/forms/${form.id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to delete form.");
+      }
+
+      setNotice("Form deleted successfully.");
+      await loadForms();
     } catch (err) {
-      console.error("Delete form error:", err);
-      alert("Failed to delete form.");
-    }
-  }
-
-  async function handleToggleStatus(form: Form) {
-    if (togglingId) return;
-    setTogglingId(form.id);
-    const nextStatus = form.status === "published" ? "draft" : "published";
-
-    try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("forms")
-        .update({ status: nextStatus, updated_at: new Date().toISOString() })
-        .eq("id", form.id);
-
-      if (error) throw error;
-
-      setForms((prev) =>
-        prev.map((f) => (f.id === form.id ? { ...f, status: nextStatus, updated_at: new Date().toISOString() } : f))
-      );
-    } catch (err) {
-      console.error("Status toggle error:", err);
-      alert("Failed to update form status. Please try again.");
+      setError(err instanceof Error ? err.message : "Unable to delete form.");
     } finally {
-      setTogglingId(null);
+      setDeletingId(null);
     }
   }
 
-  async function handleRenameForm(form: Form) {
-    setOpenMenuId(null);
-    const newTitle = window.prompt("Enter new form title:", form.title);
-    if (!newTitle || newTitle.trim() === "" || newTitle === form.title) return;
-
+  async function duplicateForm(form: FormItem) {
     try {
-      const supabase = createClient();
-      const { error } = await supabase
-        .from("forms")
-        .update({ title: newTitle.trim(), updated_at: new Date().toISOString() })
-        .eq("id", form.id);
+      setDuplicatingId(form.id);
+      setError("");
+      setNotice("");
 
-      if (error) throw error;
+      if (!API_URL) {
+        throw new Error("Backend URL is not configured.");
+      }
 
-      setForms((prev) =>
-        prev.map((f) => (f.id === form.id ? { ...f, title: newTitle.trim() } : f))
+      const token = await getToken();
+
+      const response = await fetch(
+        `${API_URL}/api/v1/forms/${form.id}/duplicate`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
       );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to duplicate form.");
+      }
+
+      setNotice("Form duplicated successfully.");
+      await loadForms();
     } catch (err) {
-      console.error("Rename form error:", err);
+      setError(err instanceof Error ? err.message : "Unable to duplicate form.");
+    } finally {
+      setDuplicatingId(null);
     }
   }
 
   function handleCopyShareLink(slug: string) {
-    const url = `${window.location.origin}/f/${slug}`;
-    navigator.clipboard.writeText(url);
+    if (typeof window === "undefined") return;
+    const shareUrl = `${window.location.origin}/f/${slug}`;
+    navigator.clipboard.writeText(shareUrl);
     setCopiedSlug(slug);
-    setTimeout(() => setCopiedSlug(null), 2500);
-    setOpenMenuId(null);
+    setTimeout(() => {
+      setCopiedSlug(null);
+    }, 2500);
   }
 
-  async function handleSignOut() {
-    setSigningOut(true);
-    try {
-      const supabase = createClient();
-      await supabase.auth.signOut();
-      router.push("/");
-      router.refresh();
-    } catch (err) {
-      console.error("Sign out error:", err);
-      router.push("/");
-    } finally {
-      setSigningOut(false);
-    }
-  }
+  const filteredForms = forms.filter((form) => {
+    const matchesSearch = form.title
+      .toLowerCase()
+      .includes(search.toLowerCase());
 
-  const filteredForms = useMemo(() => {
-    return forms.filter((form) => {
-      const matchesSearch =
-        form.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (form.description &&
-          form.description.toLowerCase().includes(searchQuery.toLowerCase()));
+    const matchesStatus =
+      statusFilter === "all" || form.status === statusFilter;
 
-      const matchesStatus =
-        statusFilter === "all" ? true : form.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
 
-      return matchesSearch && matchesStatus;
-    });
-  }, [forms, searchQuery, statusFilter]);
+  const totalResponses = forms.reduce(
+    (sum, form) => sum + (form.response_count || 0),
+    0
+  );
 
-  const stats = useMemo(() => {
-    const total = forms.length;
-    const published = forms.filter((f) => f.status === "published").length;
-    const drafts = forms.filter((f) => f.status === "draft").length;
-    const closed = forms.filter((f) => f.status === "closed").length;
-    return { total, published, drafts, closed };
-  }, [forms]);
-
-  function formatTimeAgo(dateString: string) {
-    try {
-      const now = new Date();
-      const past = new Date(dateString);
-      const diffMs = now.getTime() - past.getTime();
-      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-      if (diffHours < 1) return "Just now";
-      if (diffHours < 24) return `${diffHours}h ago`;
-      const diffDays = Math.floor(diffHours / 24);
-      if (diffDays === 1) return "Yesterday";
-      if (diffDays < 7) return `${diffDays}d ago`;
-      return past.toLocaleDateString();
-    } catch {
-      return "Recently";
-    }
-  }
-
-  const userName = userEmail ? userEmail.split("@")[0] : "Creator";
+  const filters = [
+    { label: "All", value: "all" },
+    { label: "Published", value: "published" },
+    { label: "Drafts", value: "draft" },
+    { label: "Closed", value: "closed" },
+  ];
 
   return (
-    <div className="bg-[#090e1a] text-slate-100 antialiased selection:bg-sky-500/20 selection:text-sky-300 relative min-h-screen flex flex-col font-sans">
-      {/* ASCII DIGITAL RAIN BACKDROP (Always active and visible) */}
-      <AsciiRainBackdrop opacity={0.85} />
-
-      {loading ? (
-        <div className="flex-1 min-h-screen flex items-center justify-center relative z-10">
-          <div className="flex flex-col items-center gap-3">
-            <span className="material-symbols-outlined text-4xl text-sky-400 animate-spin">
-              progress_activity
-            </span>
-            <p className="text-xs font-mono tracking-wider text-sky-300 uppercase">
-              Loading Workspace Portal...
-            </p>
+    <main className="min-h-screen bg-slate-50">
+      {/* Top Navigation with User Profile and Sign Out */}
+      <header className="flex items-center justify-between border-b bg-white px-6 py-4">
+        <div className="flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-indigo-600 text-white font-bold">
+            <FileText size={20} />
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-slate-900 leading-tight">Hypervision Form</h1>
+            <p className="text-xs text-slate-500">Central Platform Workspace</p>
           </div>
         </div>
-      ) : (
-        <>
-          {/* TOP FIXED NAVIGATION HEADER */}
-          <header className="fixed top-0 left-0 right-0 h-16 bg-[#0b0f19]/80 backdrop-blur-md border-b border-slate-800/80 z-50 flex items-center justify-between px-6 lg:px-8">
-            <div className="flex items-center gap-6">
-              <Link href="/dashboard" className="flex items-center gap-3 group">
-                <img
-                  alt="Hypervision Logo"
-                  className="w-10 h-10 sm:w-11 sm:h-11 object-contain bg-transparent shrink-0 group-hover:scale-105 transition-transform"
-                  src="/hypervision-logo.png"
-                />
-                <span className="text-lg sm:text-xl font-extrabold tracking-tight text-white">
-                  Hypervision <span className="text-sky-400 font-bold">Forms</span>
-                </span>
-              </Link>
-              <div className="h-4 w-px bg-slate-800 hidden sm:block" />
-              <span className="text-xs font-mono text-slate-500 hidden md:inline-block">
-                WORKSPACE PORTAL
-              </span>
+
+        <div className="flex items-center gap-4">
+          {currentUser && (
+            <div className="hidden sm:flex items-center gap-2 text-right">
+              <div className="h-8 w-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs uppercase">
+                {currentUser.name ? currentUser.name.slice(0, 2) : "U"}
+              </div>
+              <div className="text-left">
+                <p className="text-xs font-semibold text-slate-800">{currentUser.name}</p>
+                <p className="text-[11px] text-slate-500 truncate max-w-[140px]">{currentUser.email}</p>
+              </div>
             </div>
+          )}
 
-            <div className="flex items-center gap-3">
-              {userEmail && (
-                <div className="flex items-center gap-2.5 pl-2 border-l border-slate-800">
-                  <div className="w-7 h-7 rounded-full bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-300 text-xs font-bold uppercase font-mono">
-                    {userName.slice(0, 2)}
-                  </div>
-                  <span className="hidden lg:inline text-xs font-medium text-slate-300 font-mono">
-                    {userEmail}
-                  </span>
-                </div>
-              )}
+          <button
+            onClick={handleSignOut}
+            className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition shadow-sm"
+            title="Sign out of your account"
+          >
+            <LogOut size={15} />
+            <span>Sign out</span>
+          </button>
+        </div>
+      </header>
 
+      <div className="mx-auto max-w-7xl p-6 sm:p-8">
+        <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">
+              Creator Dashboard
+            </p>
+            <h2 className="mt-1 text-3xl font-extrabold tracking-tight text-slate-900">
+              Manage your forms.
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Create, edit, and inspect all your forms and their responses.
+            </p>
+          </div>
+
+          <button
+            onClick={openCreateModal}
+            className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700 shadow-sm transition"
+          >
+            <Plus size={18} />
+            <span>Create New Form</span>
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+            {notice}
+          </div>
+        )}
+
+        {/* Metrics Row */}
+        <div className="mb-9 grid gap-4 sm:grid-cols-3">
+          <Summary
+            icon={<FileText className="text-indigo-600" size={20} />}
+            label="Total Forms"
+            value={forms.length}
+          />
+          <Summary
+            icon={<ClipboardList className="text-emerald-600" size={20} />}
+            label="Published Forms"
+            value={forms.filter((f) => f.status === "published").length}
+          />
+          <Summary
+            icon={<Users className="text-blue-600" size={20} />}
+            label="Total Responses"
+            value={totalResponses}
+          />
+        </div>
+
+        {/* Search & Status Filters */}
+        <div className="mb-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900">Your Forms</h2>
+            <p className="text-sm text-slate-500">Browse and manage form settings</p>
+          </div>
+
+          <div className="relative sm:w-72">
+            <Search
+              className="absolute left-3 top-3 text-slate-400"
+              size={17}
+            />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search forms by title..."
+              className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm outline-none focus:border-indigo-500 shadow-sm"
+            />
+          </div>
+        </div>
+
+        <div className="mb-6 flex flex-wrap gap-2">
+          {filters.map((filter) => (
+            <button
+              key={filter.value}
+              onClick={() => setStatusFilter(filter.value)}
+              className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                statusFilter === filter.value
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Forms Grid */}
+        {loading ? (
+          <div className="flex justify-center rounded-2xl bg-white p-16 border border-slate-200">
+            <Loader2 className="animate-spin text-indigo-600" size={30} />
+          </div>
+        ) : filteredForms.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-16 text-center">
+            <FileText
+              className="mx-auto mb-4 text-indigo-400"
+              size={40}
+            />
+            <h3 className="text-lg font-semibold text-slate-900">
+              {search
+                ? "No matching forms found"
+                : statusFilter !== "all"
+                  ? `No ${statusFilter} forms`
+                  : "No forms created yet"}
+            </h3>
+            <p className="mt-2 text-sm text-slate-500">
+              {search || statusFilter !== "all"
+                ? "Try searching for a different title or resetting the filter."
+                : "Create your first form to start collecting responses."}
+            </p>
+            {!search && statusFilter === "all" && (
               <button
-                onClick={handleSignOut}
-                disabled={signingOut}
-                className="px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 text-slate-300 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
-                title="Sign Out"
+                onClick={openCreateModal}
+                className="mt-5 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 shadow-sm"
               >
-                <span>{signingOut ? "Signing Out..." : "Sign Out"}</span>
+                <Plus className="mr-1.5 inline" size={17} />
+                Create Your First Form
               </button>
-            </div>
-          </header>
-
-          {/* MAIN CONTENT CONTAINER */}
-          <main className="relative z-10 pt-20 pb-16 flex-1 w-full max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col gap-7">
-            {/* Top Action & Greeting Row */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800/80 pb-6 pt-2">
-              <div className="flex flex-col gap-1">
-                <h1 className="text-2xl lg:text-3xl text-slate-50 tracking-tight font-bold">
-                  Welcome back, <span className="capitalize text-sky-400">{userName}</span>
-                </h1>
-                <p className="text-xs text-slate-400">
-                  Innovate. Collaborate. Elevate. Intelligent data collection designed for high-velocity engineering teams.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2.5 sm:gap-3 w-full lg:w-auto">
-                {/* Search Field with Shortcut */}
-                <div className="relative flex items-center flex-1 min-w-0 sm:w-72 md:w-80 sm:flex-initial">
-                  <span className="material-symbols-outlined absolute left-3 text-[19px] text-slate-500 pointer-events-none">
-                    search
-                  </span>
-                  <input
-                    ref={searchInputRef}
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full h-11 bg-[#111827]/80 backdrop-blur-md border border-slate-800 text-slate-200 placeholder-slate-500 text-sm pl-9 sm:pl-10 pr-3 sm:pr-14 rounded-xl shadow-sm focus:outline-none focus:border-sky-500/60 focus:ring-1 focus:ring-sky-500/40 transition-colors"
-                    placeholder="Search forms..."
-                    type="text"
-                  />
-                  <div className="absolute right-3 hidden sm:flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400 text-[10px] font-mono pointer-events-none">
-                    <span>⌘</span>
-                    <span>K</span>
-                  </div>
-                </div>
-
-                {/* New Form Button */}
-                <button
-                  onClick={() => handleCreateForm("blank")}
-                  disabled={creatingForm}
-                  className="h-11 px-5 sm:px-6 bg-sky-500 hover:bg-sky-400 active:bg-sky-300 text-slate-950 font-bold text-sm rounded-xl flex items-center justify-center shrink-0 whitespace-nowrap shadow-md shadow-sky-500/20 hover:shadow-sky-500/30 transition-all cursor-pointer disabled:opacity-60 active:scale-[0.98]"
-                  type="button"
-                >
-                  <span>{creatingForm ? "Creating..." : "New Form"}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Executive Metric Cards (Total Responses removed per user instruction) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {/* Card 1: Total Forms */}
-              <div className="bg-[#111827]/80 backdrop-blur-md border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-sm">
-                <div className="flex items-center justify-between text-slate-400 text-xs">
-                  <span className="font-medium uppercase tracking-wider font-mono text-[11px]">Total Forms</span>
-                  <span className="material-symbols-outlined text-sky-400 text-[20px]">dynamic_form</span>
-                </div>
-                <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-2xl font-bold font-mono text-slate-50">{stats.total}</span>
-                  <span className="text-[11px] text-slate-400 font-mono">Configured schemas</span>
-                </div>
-              </div>
-
-              {/* Card 2: Published / Live Forms */}
-              <div className="bg-[#111827]/80 backdrop-blur-md border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-sm">
-                <div className="flex items-center justify-between text-slate-400 text-xs">
-                  <span className="font-medium uppercase tracking-wider font-mono text-[11px]">Live / Published</span>
-                  <span className="material-symbols-outlined text-emerald-400 text-[20px]">sensors</span>
-                </div>
-                <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-2xl font-bold font-mono text-emerald-400">{stats.published}</span>
-                  <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-400/90">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Active intake
-                  </span>
-                </div>
-              </div>
-
-              {/* Card 3: Drafts in Progress */}
-              <div className="bg-[#111827]/80 backdrop-blur-md border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-sm sm:col-span-2 lg:col-span-1">
-                <div className="flex items-center justify-between text-slate-400 text-xs">
-                  <span className="font-medium uppercase tracking-wider font-mono text-[11px]">Drafts / Staging</span>
-                  <span className="material-symbols-outlined text-amber-400 text-[20px]">edit_note</span>
-                </div>
-                <div className="mt-3 flex items-baseline justify-between">
-                  <span className="text-2xl font-bold font-mono text-amber-400">{stats.drafts}</span>
-                  <span className="text-[11px] text-slate-400 font-mono">Unpublished changes</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Central Workspace Layout */}
-            <div className="flex flex-col gap-4">
-              {/* Tab Bar & View Switcher */}
-              <div className="flex items-center justify-between py-1 bg-[#111827]/70 backdrop-blur-xl border border-slate-800 px-3 py-2 rounded-lg">
-                <div className="flex items-center gap-1.5 text-xs font-medium overflow-x-auto">
-                  <button
-                    onClick={() => setStatusFilter("all")}
-                    className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                      statusFilter === "all"
-                        ? "bg-slate-800 text-slate-100 font-semibold"
-                        : "text-slate-400 hover:text-slate-200"
-                    }`}
-                  >
-                    All Forms ({forms.length})
-                  </button>
-                  <button
-                    onClick={() => setStatusFilter("published")}
-                    className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                      statusFilter === "published"
-                        ? "bg-slate-800 text-emerald-400 font-semibold"
-                        : "text-slate-400 hover:text-slate-200"
-                    }`}
-                  >
-                    Live ({stats.published})
-                  </button>
-                  <button
-                    onClick={() => setStatusFilter("draft")}
-                    className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                      statusFilter === "draft"
-                        ? "bg-slate-800 text-amber-400 font-semibold"
-                        : "text-slate-400 hover:text-slate-200"
-                    }`}
-                  >
-                    Drafts ({stats.drafts})
-                  </button>
-                  {stats.closed > 0 && (
-                    <button
-                      onClick={() => setStatusFilter("closed")}
-                      className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
-                        statusFilter === "closed"
-                          ? "bg-slate-800 text-slate-200 font-semibold"
-                          : "text-slate-400 hover:text-slate-200"
+            )}
+          </div>
+        ) : (
+          <div className="grid gap-5 lg:grid-cols-2">
+            {filteredForms.map((form) => (
+              <article
+                key={form.id}
+                className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition"
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FileText className="text-indigo-600" size={22} />
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize border ${
+                        form.status === "published"
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : form.status === "closed"
+                            ? "bg-slate-100 text-slate-700 border-slate-200"
+                            : "bg-amber-50 text-amber-700 border-amber-200"
                       }`}
                     >
-                      Closed ({stats.closed})
-                    </button>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1 bg-[#0b1220] p-1 rounded-lg border border-slate-800">
-                  <button
-                    onClick={() => setViewMode("grid")}
-                    className={`p-1.5 rounded-md transition-all cursor-pointer flex items-center justify-center ${
-                      viewMode === "grid"
-                        ? "bg-slate-800 text-sky-400 shadow-sm"
-                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                    }`}
-                    title="Grid View"
-                    aria-label="Grid View"
-                    type="button"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">grid_view</span>
-                  </button>
-                  <button
-                    onClick={() => setViewMode("table")}
-                    className={`p-1.5 rounded-md transition-all cursor-pointer flex items-center justify-center ${
-                      viewMode === "table"
-                        ? "bg-slate-800 text-sky-400 shadow-sm"
-                        : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-                    }`}
-                    title="Table View"
-                    aria-label="Table View"
-                    type="button"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">table_rows</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Toast Notification when link copied */}
-              {copiedSlug && (
-                <div className="fixed bottom-12 right-6 z-50 bg-sky-500 text-slate-950 px-4 py-2 rounded-lg font-medium text-xs shadow-xl flex items-center gap-2 animate-bounce">
-                  <span className="material-symbols-outlined text-sm">content_paste</span>
-                  <span>Public link copied to clipboard!</span>
-                </div>
-              )}
-
-              {/* Forms Grid or Table View or Empty State */}
-              {filteredForms.length === 0 ? (
-                <div className="bg-[#111827]/75 backdrop-blur-xl border border-slate-800 rounded-xl p-12 text-center shadow-lg">
-                  <div className="w-12 h-12 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center mx-auto mb-3">
-                    <span className="material-symbols-outlined text-2xl">description</span>
+                      {form.status}
+                    </span>
                   </div>
-                  <h3 className="text-base font-semibold text-slate-100">
-                    {searchQuery || statusFilter !== "all"
-                      ? "No matching intake schemas found"
-                      : "No intake schemas created yet"}
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-                    {searchQuery || statusFilter !== "all"
-                      ? "Try adjusting your search criteria or clearing active filters."
-                      : "Start collecting telemetry, feedback, and registrations with a new dynamic form."}
+
+                  <p className="text-xs text-slate-400">
+                    Updated {new Date(form.updated_at).toLocaleDateString()}
                   </p>
-                  {!searchQuery && statusFilter === "all" && (
-                    <button
-                      onClick={() => handleCreateForm("blank")}
-                      className="mt-5 inline-flex items-center justify-center px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-medium text-xs transition-colors cursor-pointer"
-                    >
-                      <span>Create First Form</span>
-                    </button>
+                </div>
+
+                <h3 className="text-xl font-bold text-slate-900 leading-snug">
+                  {form.title}
+                </h3>
+                <p className="mt-1 text-sm text-slate-500 line-clamp-2">
+                  {form.description || "No description provided."}
+                </p>
+
+                <div className="mt-4 flex items-center justify-between text-xs text-slate-500 border-t pt-3">
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <Users size={15} />
+                    {form.response_count || 0} responses
+                  </span>
+
+                  {form.shareable_slug && (
+                    <span className="font-mono text-slate-400 text-[11px]">
+                      slug: {form.shareable_slug.slice(0, 10)}…
+                    </span>
                   )}
                 </div>
-              ) : viewMode === "grid" ? (
-                /* FORMS GRID MODE */
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {filteredForms.map((form) => {
-                    const isPublished = form.status === "published";
-                    const isClosed = form.status === "closed";
-                    const menuOpen = openMenuId === form.id;
 
-                    return (
-                      <div
-                        key={form.id}
-                        className="bg-[#111827]/75 backdrop-blur-xl border border-slate-800 hover:border-sky-500/40 rounded-xl p-5 transition-all flex flex-col justify-between group shadow-lg shadow-black/40 relative"
-                      >
-                        <div>
-                          {/* Status Badge & More Options Menu */}
-                          <div className="flex items-start justify-between gap-2 mb-3">
-                            <button
-                              type="button"
-                              onClick={() => handleToggleStatus(form)}
-                              disabled={togglingId === form.id}
-                              className="cursor-pointer transition hover:opacity-80"
-                              title="Click to toggle status"
-                            >
-                              {isPublished ? (
-                                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-medium bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                  LIVE
-                                </span>
-                              ) : isClosed ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-medium bg-slate-800 border border-slate-700 text-slate-400">
-                                  CLOSED
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-medium bg-slate-800 border border-slate-700 text-slate-400">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                                  DRAFT
-                                </span>
-                              )}
-                            </button>
+                {/* Card Action Buttons */}
+                <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2 border-t pt-4">
+                  <button
+                    onClick={() => openEditModal(form)}
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 p-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    <Pencil size={14} />
+                    <span>Edit Form</span>
+                  </button>
 
-                            <div className="relative" data-dropdown>
-                              <button
-                                className="w-6 h-6 rounded hover:bg-slate-800 text-slate-400 flex items-center justify-center transition-colors cursor-pointer text-xs font-mono font-bold"
-                                onClick={() => setOpenMenuId(menuOpen ? null : form.id)}
-                                type="button"
-                                title="Options"
-                              >
-                                •••
-                              </button>
+                  <button
+                    onClick={() => router.push(`/editor/${form.id}`)}
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50/50 p-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition"
+                  >
+                    <FileText size={14} />
+                    <span>Builder</span>
+                  </button>
 
-                              {menuOpen && (
-                                <div className="absolute right-0 mt-1 w-44 bg-slate-900 border border-slate-800 rounded-lg shadow-xl z-20 py-1 flex flex-col text-xs text-slate-300 animate-in fade-in zoom-in-95">
-                                  <button
-                                    onClick={() => handleRenameForm(form)}
-                                    className="px-3 py-1.5 hover:bg-slate-800 text-left cursor-pointer"
-                                  >
-                                    Rename Title
-                                  </button>
-                                  <button
-                                    onClick={() => handleToggleStatus(form)}
-                                    className="px-3 py-1.5 hover:bg-slate-800 text-left cursor-pointer"
-                                  >
-                                    {isPublished ? "Set to Draft" : "Publish Form"}
-                                  </button>
-                                  {isPublished && (
-                                    <button
-                                      onClick={() => handleCopyShareLink(form.shareable_slug)}
-                                      className="px-3 py-1.5 hover:bg-slate-800 text-left cursor-pointer"
-                                    >
-                                      Copy Public URL
-                                    </button>
-                                  )}
-                                  <Link
-                                    href={`/editor/${form.id}`}
-                                    className="px-3 py-1.5 hover:bg-slate-800 text-left"
-                                  >
-                                    Builder Settings
-                                  </Link>
-                                  <div className="h-px bg-slate-800 my-1" />
-                                  <button
-                                    onClick={() => handleDeleteForm(form.id, form.title)}
-                                    className="px-3 py-1.5 hover:bg-rose-950/40 text-left text-rose-400 cursor-pointer"
-                                  >
-                                    Delete Form
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                  <button
+                    onClick={() => router.push(`/responses/${form.id}`)}
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50/50 p-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 transition"
+                  >
+                    <Users size={14} />
+                    <span>Responses</span>
+                  </button>
 
-                          {/* Title & Description */}
-                          <Link href={`/editor/${form.id}`} className="block">
-                            <h2 className="text-base font-semibold text-slate-100 group-hover:text-sky-300 transition-colors line-clamp-1">
-                              {form.title || "Untitled Form"}
-                            </h2>
-                          </Link>
-                          <p className="text-xs text-slate-400 mt-1 line-clamp-2 min-h-[32px]">
-                            {form.description || "No description configured."}
-                          </p>
+                  {/* Share Link Action */}
+                  <button
+                    onClick={() => handleCopyShareLink(form.shareable_slug)}
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 p-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+                    title="Copy public registration link to clipboard"
+                  >
+                    {copiedSlug === form.shareable_slug ? (
+                      <>
+                        <Check size={14} className="text-emerald-600" />
+                        <span className="text-emerald-600">Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Share2 size={14} />
+                        <span>Share Link</span>
+                      </>
+                    )}
+                  </button>
 
-                          {/* Responses & Progress indicator */}
-                          <div className="grid grid-cols-2 gap-2 mt-4 py-2.5 bg-slate-950/60 border border-slate-800/80 rounded-lg px-3">
-                            <div>
-                              <span className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">
-                                Submissions
-                              </span>
-                              <div className="font-mono text-base font-semibold text-slate-200">
-                                {form.response_count}
-                              </div>
-                            </div>
-                            <div>
-                              <span className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">
-                                Status
-                              </span>
-                              <div className="font-mono text-base font-semibold capitalize text-sky-400">
-                                {form.status}
-                              </div>
-                            </div>
-                          </div>
+                  {/* Duplicate Form Action */}
+                  <button
+                    onClick={() => duplicateForm(form)}
+                    disabled={duplicatingId === form.id}
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 p-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition"
+                  >
+                    {duplicatingId === form.id ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Copy size={14} />
+                    )}
+                    <span>{duplicatingId === form.id ? "Duplicating..." : "Duplicate"}</span>
+                  </button>
 
-                          {/* Progress bar */}
-                          <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden mt-3">
-                            <div
-                              className={`h-full rounded-full transition-all duration-500 ${
-                                isPublished ? "bg-sky-500" : isClosed ? "bg-slate-600" : "bg-amber-500"
-                              }`}
-                              style={{
-                                width: form.response_count > 0 ? `${Math.min(100, form.response_count * 10)}%` : isPublished ? "100%" : "30%",
-                              }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Card Footer Actions */}
-                        <div className="mt-4 pt-3 flex items-center justify-between border-t border-slate-800/80">
-                          <span className="text-[11px] text-slate-500 font-mono">
-                            {formatTimeAgo(form.updated_at)}
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            {isPublished && (
-                              <a
-                                href={`/f/${form.shareable_slug}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="h-7 px-2.5 rounded bg-slate-800 hover:bg-slate-700/80 text-slate-300 text-xs font-medium flex items-center justify-center transition-colors"
-                                title="Open live public form"
-                              >
-                                View
-                              </a>
-                            )}
-                            <Link
-                              href={`/responses/${form.id}`}
-                              className="h-7 px-2.5 rounded bg-slate-800 hover:bg-slate-700/80 text-slate-300 text-xs font-medium flex items-center justify-center transition-colors"
-                            >
-                              Responses
-                            </Link>
-                            <Link
-                              href={`/editor/${form.id}`}
-                              className="h-7 px-2.5 rounded bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20 text-sky-400 text-xs font-medium flex items-center justify-center transition-colors"
-                            >
-                              Edit
-                            </Link>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {/* Delete Form Action */}
+                  <button
+                    onClick={() => deleteForm(form)}
+                    disabled={deletingId === form.id}
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50/50 p-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50 transition"
+                  >
+                    {deletingId === form.id ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Trash2 size={14} />
+                    )}
+                    <span>{deletingId === form.id ? "Deleting..." : "Delete"}</span>
+                  </button>
                 </div>
-              ) : (
-                /* FORMS TABLE MODE */
-                <div className="bg-[#111827]/75 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden shadow-xl">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-950/80 border-b border-slate-800 text-slate-400 uppercase tracking-wider text-[10px] font-semibold font-mono">
-                        <tr>
-                          <th className="px-4 py-3 font-semibold">Form Title</th>
-                          <th className="px-4 py-3 font-semibold">Status</th>
-                          <th className="px-4 py-3 font-semibold">Submissions</th>
-                          <th className="px-4 py-3 font-semibold">Intake State</th>
-                          <th className="px-4 py-3 font-semibold">Last Modified</th>
-                          <th className="px-4 py-3 font-semibold text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/80 text-slate-300">
-                        {filteredForms.map((form) => {
-                          const isPublished = form.status === "published";
-                          const isClosed = form.status === "closed";
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
 
-                          return (
-                            <tr key={form.id} className="hover:bg-slate-800/40 transition-colors">
-                              <td className="px-4 py-3">
-                                <Link
-                                  href={`/editor/${form.id}`}
-                                  className="font-medium text-slate-200 hover:text-sky-300 transition-colors line-clamp-1"
-                                >
-                                  {form.title || "Untitled Form"}
-                                </Link>
-                                <div className="text-[11px] text-slate-500 font-mono line-clamp-1">
-                                  /f/{form.shareable_slug}
-                                </div>
-                              </td>
-                              <td className="px-4 py-3">
-                                {isPublished ? (
-                                  <span className="px-2 py-0.5 rounded text-[11px] font-mono font-medium bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-                                    LIVE
-                                  </span>
-                                ) : isClosed ? (
-                                  <span className="px-2 py-0.5 rounded text-[11px] font-mono font-medium bg-slate-800 border border-slate-700 text-slate-400">
-                                    CLOSED
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded text-[11px] font-mono font-medium bg-slate-800 border border-slate-700 text-slate-400">
-                                    DRAFT
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-4 py-3 font-mono text-slate-200">
-                                {form.response_count}
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-mono text-sky-400 capitalize">
-                                    {form.status}
-                                  </span>
-                                  <div className="w-16 bg-slate-800 h-1 rounded-full overflow-hidden">
-                                    <div
-                                      className={`h-full rounded-full ${
-                                        isPublished ? "bg-sky-500" : isClosed ? "bg-slate-600" : "bg-amber-500"
-                                      }`}
-                                      style={{
-                                        width: form.response_count > 0 ? `${Math.min(100, form.response_count * 10)}%` : isPublished ? "100%" : "30%",
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 text-slate-400 font-mono">
-                                {formatTimeAgo(form.updated_at)}
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                <div className="flex items-center justify-end gap-1.5">
-                                  {isPublished && (
-                                    <a
-                                      href={`/f/${form.shareable_slug}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="px-2 py-1 rounded hover:bg-slate-800 text-slate-400 hover:text-sky-300 text-xs font-medium"
-                                      title="View Public Form"
-                                    >
-                                      View
-                                    </a>
-                                  )}
-                                  <Link
-                                    href={`/responses/${form.id}`}
-                                    className="px-2 py-1 rounded hover:bg-slate-800 text-slate-400 hover:text-sky-300 text-xs font-medium"
-                                    title="Responses"
-                                  >
-                                    Responses
-                                  </Link>
-                                  <Link
-                                    href={`/editor/${form.id}`}
-                                    className="px-2 py-1 rounded hover:bg-slate-800 text-sky-400 text-xs font-medium"
-                                    title="Edit"
-                                  >
-                                    Edit
-                                  </Link>
-                                  <button
-                                    onClick={() => handleDeleteForm(form.id, form.title)}
-                                    className="px-2 py-1 rounded hover:bg-slate-800 text-slate-400 hover:text-rose-400 text-xs font-medium cursor-pointer"
-                                    title="Delete"
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+      {/* Create / Edit Form Modal with Status Controls */}
+      {(showCreate || editingForm) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-slate-900">
+                {editingForm ? "Edit Form Settings" : "Create New Form"}
+              </h2>
+
+              <button
+                onClick={() => {
+                  setShowCreate(false);
+                  setEditingForm(null);
+                  setError("");
+                }}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close modal"
+              >
+                <X size={18} />
+              </button>
             </div>
-          </main>
 
-          {/* STATIC FOOTER */}
-          <footer className="relative z-10 w-full py-4 border-t border-slate-800/80 bg-[#090e1a]/90 backdrop-blur-md text-center">
-            <p className="text-[11px] font-mono text-slate-500 tracking-wider select-none">
-              • © 2026 HYPERVISION. ALL RIGHT RESERVED.
-            </p>
-          </footer>
-        </>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-700">
+              Form Title
+            </label>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g., Annual Customer Feedback Survey"
+              className="mb-4 w-full rounded-xl border border-slate-300 p-3 text-sm outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+            />
+
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-700">
+              Description (Optional)
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Provide context or instructions for your respondents..."
+              rows={3}
+              className="mb-4 w-full rounded-xl border border-slate-300 p-3 text-sm outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20"
+            />
+
+            {/* Status Selector in Edit Modal */}
+            {editingForm && (
+              <div className="mb-4">
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                  Form Status
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["draft", "published", "closed"] as const).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setStatus(s)}
+                      className={`rounded-xl py-2 px-3 text-xs font-semibold capitalize border transition ${
+                        status === s
+                          ? s === "published"
+                            ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                            : s === "closed"
+                              ? "bg-slate-700 text-white border-slate-700 shadow-sm"
+                              : "bg-amber-500 text-white border-amber-500 shadow-sm"
+                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-500">
+                  {status === "published"
+                    ? "✓ Form is public and actively collecting responses."
+                    : status === "closed"
+                      ? "✕ Form is closed; respondents will see a closed notice."
+                      : "⚙ Form is in draft mode and not accessible to the public."}
+                </p>
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-3 border-t pt-4">
+              <button
+                onClick={() => {
+                  setShowCreate(false);
+                  setEditingForm(null);
+                  setError("");
+                }}
+                className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={editingForm ? updateForm : createForm}
+                disabled={!title.trim() || saving}
+                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition shadow-sm"
+              >
+                {saving
+                  ? "Saving..."
+                  : editingForm
+                    ? "Save Changes"
+                    : "Create Form"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
+    </main>
+  );
+}
+
+function Summary({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between text-slate-500">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</span>
+        {icon}
+      </div>
+      <p className="mt-3 text-3xl font-extrabold text-slate-900">{value}</p>
     </div>
   );
 }
